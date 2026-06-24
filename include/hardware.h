@@ -1,10 +1,10 @@
 #ifndef HARDWARE_H
 #define HARDWARE_H
 
-#include "HP203b.h"
+// #include "dps368.h"
 #include "ODriveCAN.h"
 #include "ODriveMCPCAN.hpp"
-#include "mpu6x00.h"
+#include "icm42688.h"
 
 #define LEDR 24
 #define LEDG 22
