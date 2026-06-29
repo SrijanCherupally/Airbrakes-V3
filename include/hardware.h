@@ -1,7 +1,7 @@
 #ifndef HARDWARE_H
 #define HARDWARE_H
 
-// #include "dps368.h"
+#include "dps368.h"
 #include "ODriveCAN.h"
 #include "ODriveMCPCAN.hpp"
 #include "icm42688.h"
@@ -27,8 +27,8 @@
 #define BARO_SDA 4
 #define BARO_SCL 5
 
-extern HP203B hp;
-extern Mpu6500 mpu;
+extern DpsClass baro;
+extern ICM42688 imu;
 extern ODriveCAN odrv;
 extern float motorvel;
 extern float motorpos;

@@ -25,7 +25,7 @@
 #include <SPI.h>
 #endif
 #include <Wire.h>
-#include "util/dps_config.h"
+#include "dps_config.h"
 
 class DpsClass
 {
