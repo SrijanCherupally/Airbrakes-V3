@@ -1,25 +1,21 @@
 #include <Arduino.h>
+#include <baro.cpp>
+#include <imu.cpp>
+#include <rgb.cpp>
 
-// put function declarations here:
-int myFunction(int, int);
 
 void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
+
 }
 
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
-} 
+void setup1() {
 
-void setup() {
-  // put your setup code here, to run once:
-  Serial.begin(9600);
-  Serial.println("Hello, World!");
-  Serial.println("Booting...");
+}
+
+void loop1() {
+
 }
