@@ -5,11 +5,11 @@
 
 
 void setup() {
-
+  Serial.println("Starting Airbrakes V3...");
 }
 
 void loop() {
-
+  Serial.println("Running main loop...");
 }
 
 void setup1() {
