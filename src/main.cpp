@@ -2,7 +2,7 @@
 #include <baro.cpp>
 #include <imu.cpp>
 #include <rgb.cpp>
-#include <config.cpp>
+#include <config.h>
 
 
 void setup() {
