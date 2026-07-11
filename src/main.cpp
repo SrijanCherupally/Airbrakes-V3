@@ -6,12 +6,11 @@
 
 
 void setup() {
-  //Serial.println("Starting Airbrakes V3...");
-  motorPos = 0.0f;
+
 }
 
 void loop() {
-  //Serial.println("Running main loop...");
+
 }
 
 void setup1() {
