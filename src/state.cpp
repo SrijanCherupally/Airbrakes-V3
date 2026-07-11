@@ -7,5 +7,3 @@ float calcCd(float newMotorPos) {
     return Cd;
 }
 
-
-
