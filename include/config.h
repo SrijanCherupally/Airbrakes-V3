@@ -3,6 +3,8 @@
 
 extern float motorMax;
 extern float motorMin;
+extern float motorPos;
+void setMotorPos(float newMotorPos);
 extern float mass;
 extern float baseCd;
 extern float launchAccel;
