@@ -1,5 +1,6 @@
 #include <math.h>
 #include <config.h>
+#include <cdEstimator.cpp>
 
 float calcCd(float newMotorPos) {
 
