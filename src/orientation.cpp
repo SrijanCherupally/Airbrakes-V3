@@ -129,3 +129,39 @@ void updateOrientation() {
     q.z /= mag;
 
 }
+
+void quaternionToMatrix(float R[3][3])
+{
+    R[0][0] = 1.0f - 2.0f * (q.y * q.y + q.z * q.z);
+    R[0][1] = 2.0f * (q.x * q.y - q.z * q.w);
+    R[0][2] = 2.0f * (q.x * q.z + q.y * q.w);
+
+    R[1][0] = 2.0f * (q.x * q.y + q.z * q.w);
+    R[1][1] = 1.0f - 2.0f * (q.x * q.x + q.z * q.z);
+    R[1][2] = 2.0f * (q.y * q.z - q.x * q.w);
+
+    R[2][0] = 2.0f * (q.x * q.z - q.y * q.w);
+    R[2][1] = 2.0f * (q.y * q.z + q.x * q.w);
+    R[2][2] = 1.0f - 2.0f * (q.x * q.x + q.y * q.y);
+}
+
+void getWorldAcceleration(float world[3])
+{
+    float R[3][3];
+    quaternionToMatrix(R);
+
+    float body[3];
+    body[0] = imu.getAccX();
+    body[1] = imu.getAccY();
+    body[2] = imu.getAccZ();
+
+    // Transform body frame acceleration to world frame
+    world[0] = R[0][0] * body[0] + R[0][1] * body[1] + R[0][2] * body[2];
+    world[1] = R[1][0] * body[0] + R[1][1] * body[1] + R[1][2] * body[2];
+    world[2] = R[2][0] * body[0] + R[2][1] * body[1] + R[2][2] * body[2];
+
+    world[2] -= 9.80665f;
+}
+
+
+
