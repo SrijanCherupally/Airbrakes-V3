@@ -7,15 +7,6 @@ float motorMax = 41.0f; // motorPos, 41 units is 41 revolution of the motor
 float motorMin = 0.0f; // 0 revolutions of the motor
 float motorPos = 0.0f; // Current position of motor
 
-void setMotorPos(float newMotorPos) { // Motor position limits
-    motorPos = newMotorPos;
-    if (motorPos > motorMax) {
-        motorPos = motorMax;
-    } else if (motorPos < motorMin) {
-        motorPos = motorMin;
-    }
-}
-
 // Rocket parameters
 float mass = 0.608f; // kg
 float baseCd = 0.492f; // OpenRocket estimate
