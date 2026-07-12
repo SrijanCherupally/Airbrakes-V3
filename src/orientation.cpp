@@ -4,6 +4,9 @@
 #include <baro.cpp>
 #include <vector.h>
 
+#define loopTime 500 // Hz
+const float dT = 1.0f / (float)loopTime;
+
 IMU imu;
 float scaleAccZ = 1.0f;
 
@@ -14,23 +17,23 @@ struct quaternion {
     float z;
 };
 
-quaternion q;
+quaternion q = {1.0f, 0.0f, 0.0f, 0.0f};
 
 void initOrientation() {
 
-    float a[3];
-    a[0] = imu.getAccX();
-    a[1] = imu.getAccY();
-    a[2] = imu.getAccZ();
+    float accel[3];
+    accel[0] = imu.getAccX();
+    accel[1] = imu.getAccY();
+    accel[2] = imu.getAccZ();
 
-    a[2] *= scaleAccZ;
+    accel[2] *= scaleAccZ;
 
-    if (a[2] == 0.0f) {
-        a[2] = 0.00001f; // prevent indivisiblity
+    if (accel[2] == 0.0f) {
+        accel[2] = 0.00001f; // prevent indivisiblity
     }
 
     float tmp[3];
-    copyVector(tmp, a);
+    copyVector(tmp, accel);
     normalizeVector(tmp);
 
     float roll = atan2f(tmp[1], tmp[2]);
@@ -54,4 +57,75 @@ void initOrientation() {
     q.x = sinRoll * cosPitch * cosYaw - cosRoll * sinPitch * sinYaw;
     q.y = cosRoll * sinPitch * cosYaw + sinRoll * cosPitch * sinYaw;
     q.z = cosRoll * cosPitch * sinYaw - sinRoll * sinPitch * cosYaw;
+}
+
+void multiplyQuaternion(const quaternion &a,
+                        const quaternion &b,
+                        quaternion &result)
+{
+    result.w = a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z;
+
+    result.x = a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y;
+
+    result.y = a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x;
+
+    result.z = a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w;
+}
+
+void updateOrientation() {
+
+    quaternion dq;
+
+    float gyro[3];
+    gyro[0] = imu.getGyrX();
+    gyro[1] = imu.getGyrY();
+    gyro[2] = imu.getGyrZ();
+
+    float deltaRot[3];
+    copyVector(deltaRot, gyro);
+
+    deltaRot[0] *= dT;
+    deltaRot[1] *= dT;
+    deltaRot[2] *= dT;
+
+    float theta = sqrtf(deltaRot[0] * deltaRot[0] + deltaRot[1] * deltaRot[1] + deltaRot[2] * deltaRot[2]);
+
+    float rotAxis[3];
+    copyVector(rotAxis, deltaRot);
+
+    if (theta < 1e-6f) 
+    {
+        dq.w = 1.0f;
+        dq.x = 0.0f;
+        dq.y = 0.0f;
+        dq.z = 0.0f;
+    }
+    else
+    {
+        rotAxis[0] /= theta;
+        rotAxis[1] /= theta;
+        rotAxis[2] /= theta;
+
+        float halfTheta = theta * 0.5f;
+        float sinHalfTheta = sinf(halfTheta);
+
+        dq.w = cosf(halfTheta);
+        dq.x = rotAxis[0] * sinHalfTheta;
+        dq.y = rotAxis[1] * sinHalfTheta;
+        dq.z = rotAxis[2] * sinHalfTheta;
+    }
+
+    quaternion result;
+
+    multiplyQuaternion(q, dq, result);
+
+    q = result;
+
+    float mag = sqrtf(q.w*q.w + q.x*q.x + q.y*q.y + q.z*q.z);
+
+    q.w /= mag;
+    q.x /= mag;
+    q.y /= mag;
+    q.z /= mag;
+
 }
