@@ -57,6 +57,7 @@ public:
   float getTemperatureC() const { return tempC; }
   float getPressurePa() const { return pressurePa; }
   float getAltitudeCm() const { return altitude_cm; }
+  float getAltitudeM() const { return altitude_cm / 100.0f; }
   float getBaselinePressure() const { return baselinePressure; }
 
 private:

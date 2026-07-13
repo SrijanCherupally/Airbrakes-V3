@@ -12,17 +12,21 @@ public:
 
 
     // IMU update
-    void predict(float acceleration);
+    void predict();
 
 
     // Barometer update
-    void update(float altitudeMeasurement);
+    void update();
 
 
 
     float getAltitude();
     float getVelocity();
     float getBias();
+    float getCorrectedAcceleration();
+
+    float getVerticalAcceleration();
+    float* getWorldAcceleration(float world[3]);
 
 
 
@@ -36,6 +40,9 @@ private:
     float altitude;
     float velocity;
     float bias;
+    float correctedAcceleration;
+
+    float worldAcc[3];
 
 
 

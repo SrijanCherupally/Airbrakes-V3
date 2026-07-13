@@ -1,5 +1,9 @@
 #include "kalman.h"
+#include <orientation.cpp>
 #include <math.h>
+#include <baro.cpp>
+
+BARO baro;
 
 Kalman::Kalman(float dt)
 {
@@ -23,7 +27,7 @@ Kalman::Kalman(float dt)
 
 
 
-    // Process noise
+    // Process noisefad
 
     Q_altitude = 0.01f;
 
@@ -39,83 +43,43 @@ Kalman::Kalman(float dt)
 
 }
 
-void Kalman::predict(float acceleration)
+void Kalman::predict()
 {
-
-    // Remove estimated bias
+    getWorldAcceleration(worldAcc);
 
     float correctedAcceleration =
-        acceleration - bias;
-
-
-
-    // Store old velocity
+        worldAcc[2] - bias;
 
     float oldVelocity = velocity;
 
-
-
-    // Integrate acceleration
-
     velocity += correctedAcceleration * dt;
 
-
-
-    altitude += oldVelocity * dt
-              + 0.5f *
-                correctedAcceleration *
-                dt * dt;
-
-
-
-    // Increase uncertainty
+    altitude +=
+        oldVelocity * dt +
+        0.5f * correctedAcceleration * dt * dt;
 
     P[0][0] += Q_altitude;
-
     P[1][1] += Q_velocity;
-
     P[2][2] += Q_bias;
-
 }
 
-void Kalman::update(float altitudeMeasurement)
+void Kalman::update()
 {
+    float altitudeMeasurement =
+        baro.getAltitudeM();
 
     float error =
         altitudeMeasurement - altitude;
-
-
-
-    // Kalman gain
 
     float K =
         P[0][0] /
         (P[0][0] + R_altitude);
 
-
-
-    // Correct altitude
-
     altitude += K * error;
-
-
-
-    // Reduce uncertainty
 
     P[0][0] *= (1.0f - K);
 
-
-
-    /*
-       Bias correction
-
-       If altitude error exists,
-       adjust bias slightly
-    */
-
     bias += 0.001f * error;
-
-
 }
 
 float Kalman::getAltitude()
@@ -129,8 +93,12 @@ float Kalman::getVelocity()
     return velocity;
 }
 
-
 float Kalman::getBias()
 {
     return bias;
+}
+
+float Kalman::getCorrectedAcceleration()
+{
+    return correctedAcceleration;
 }

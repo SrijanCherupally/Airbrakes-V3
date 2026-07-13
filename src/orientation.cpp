@@ -1,7 +1,6 @@
 #include <math.h>
 #include <config.h>
 #include <imu.cpp>
-#include <baro.cpp>
 #include <vector.h>
 
 #define loopTime 500 // Hz
