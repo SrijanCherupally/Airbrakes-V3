@@ -20,7 +20,7 @@ N_CD = 20
 VEL_MIN = 0.0
 VEL_MAX = 80.0
 CD_MIN = 0.0
-CD_MAX = 5.5
+CD_MAX = 6.0
 
 OUTPUT_PY = "coast_table.py"
 OUTPUT_CPP = "../include/coast_table.h"
