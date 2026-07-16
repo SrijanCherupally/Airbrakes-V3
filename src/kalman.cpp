@@ -1,5 +1,3 @@
-/*
-
 #include "kalman.h"
 #include <orientation.cpp>
 #include <math.h>
@@ -104,5 +102,3 @@ float Kalman::getCorrectedAcceleration()
 {
     return correctedAcceleration;
 }
-
-*/

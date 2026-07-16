@@ -1,5 +1,3 @@
-/*
-
 #include <math.h>
 #include <orientation.cpp>
 #include "kalman.h"
@@ -72,5 +70,3 @@ float getCoastAltitude(float velocity, float cd) {
   float a1 = a01 * (1.0f - vw) + a11 * vw;
   return a0 * (1.0f - cw) + a1 * cw;
 }
-
-*/
