@@ -1,3 +1,5 @@
+/*
+
 #include <math.h>
 #include <config.h>
 #include <imu.cpp>
@@ -162,5 +164,5 @@ void getWorldAcceleration(float world[3])
     world[2] -= 9.80665f;
 }
 
-
+*/
 

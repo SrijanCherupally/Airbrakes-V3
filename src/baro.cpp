@@ -1,13 +1,15 @@
 #include <Arduino.h>
-#include <SPI.h>
+#include <Wire.h>
 #include <math.h>
 
 // ---------- PIN DEFINES ----------
-#define DPS368_CS   17
-#define DPS368_SCK  18
-#define DPS368_MOSI 19
-#define DPS368_MISO 16
-#define dpsSPI SPI
+#define DPS368_SCL  5
+#define DPS368_SDA  4
+#define dpsWire     Wire
+
+// DPS368 I2C address: 0x77 if SDO pin is high (or floating/pulled up),
+// 0x76 if SDO pin is tied to GND. Change this if your board wires SDO low.
+#define DPS368_I2C_ADDR 0x77
 
 // ---------- REGISTERS ----------
 #define REG_PRS_B2     0x00
@@ -27,7 +29,7 @@
 #define MEAS_PRS_RDY    (1u << 4)
 
 
-class BARO 
+class BARO
 {
 public:
   BARO() {}
@@ -77,14 +79,10 @@ private:
   float tempC = 0.0f, pressurePa = 0.0f, altitude_cm = 0.0f;
 
   void init() {
-    pinMode(DPS368_CS, OUTPUT);
-    digitalWrite(DPS368_CS, HIGH);
-
-    dpsSPI.setSCK(DPS368_SCK);
-    dpsSPI.setTX(DPS368_MOSI);
-    dpsSPI.setRX(DPS368_MISO);
-    dpsSPI.begin();
-    dpsSPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+    dpsWire.setSCL(DPS368_SCL);
+    dpsWire.setSDA(DPS368_SDA);
+    dpsWire.begin();
+    dpsWire.setClock(400000); // 400kHz fast mode
 
     dpsWrite(REG_RESET, 0x09);
     delay(50);
@@ -112,27 +110,32 @@ private:
     baselinePressure = calcPressurePa(rawP, rawT);
   }
 
-  // SPI helpers
+  // I2C helpers
   void dpsWrite(uint8_t reg, uint8_t val) {
-    digitalWrite(DPS368_CS, LOW);
-    dpsSPI.transfer(reg & 0x7F);
-    dpsSPI.transfer(val);
-    digitalWrite(DPS368_CS, HIGH);
+    dpsWire.beginTransmission(DPS368_I2C_ADDR);
+    dpsWire.write(reg);
+    dpsWire.write(val);
+    dpsWire.endTransmission();
   }
 
   uint8_t dpsRead8(uint8_t reg) {
-    digitalWrite(DPS368_CS, LOW);
-    dpsSPI.transfer(reg | 0x80);
-    uint8_t val = dpsSPI.transfer(0x00);
-    digitalWrite(DPS368_CS, HIGH);
+    dpsWire.beginTransmission(DPS368_I2C_ADDR);
+    dpsWire.write(reg);
+    dpsWire.endTransmission(false); // repeated start, keep bus held
+    dpsWire.requestFrom(DPS368_I2C_ADDR, (uint8_t)1);
+    uint8_t val = 0;
+    if (dpsWire.available()) val = dpsWire.read();
     return val;
   }
 
   void dpsReadBlock(uint8_t reg, uint8_t *buf, uint8_t len) {
-    digitalWrite(DPS368_CS, LOW);
-    dpsSPI.transfer(reg | 0x80);
-    for (uint8_t i = 0; i < len; i++) buf[i] = dpsSPI.transfer(0x00);
-    digitalWrite(DPS368_CS, HIGH);
+    dpsWire.beginTransmission(DPS368_I2C_ADDR);
+    dpsWire.write(reg);
+    dpsWire.endTransmission(false); // repeated start, keep bus held
+    dpsWire.requestFrom(DPS368_I2C_ADDR, len);
+    for (uint8_t i = 0; i < len && dpsWire.available(); i++) {
+      buf[i] = dpsWire.read();
+    }
   }
 
   int32_t readRaw24(uint8_t reg) {

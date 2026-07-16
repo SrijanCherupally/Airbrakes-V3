@@ -1,20 +1,13 @@
+/*
+
 #include <math.h>
-#include <config.h>
 #include <orientation.cpp>
 #include "kalman.h"
 #include "config.h"
 #include "coast_table.h"
 
-Kalman filter;
+Kalman filter(0.01f);
 float MotorOffset;
-
-/* float calcCd(float newMotorPos) {
-
-    float Cd = -0.00000283694 * pow(newMotorPos, 4) + 0.000292232 * pow(newMotorPos, 3) - 0.0128345 * pow(newMotorPos, 2) + 0.375533 * newMotorPos + 0.534332;
-    return Cd;
-
-}
-*/
 
 float currentCd(float acceleration, float velocity) {
 
@@ -23,18 +16,6 @@ float currentCd(float acceleration, float velocity) {
     return currentCd;
 
 }
-
-/*
-
-void calcMotorOffset() {
-
-    float predictedCd = calcCd(motorPos);
-    float measuredCd = currentCd(filter.getCorrectedAcceleration(), filter.getVelocity());
-    MotorOffset = measuredCd - predictedCd;
-
-}
-
-*/
 
 static float solveDesiredCdContinuous(float velocity, float altitude) {
   float predMinCd = altitude + getCoastAltitude(velocity, COAST_CD_MIN);
@@ -91,3 +72,5 @@ float getCoastAltitude(float velocity, float cd) {
   float a1 = a01 * (1.0f - vw) + a11 * vw;
   return a0 * (1.0f - cw) + a1 * cw;
 }
+
+*/
