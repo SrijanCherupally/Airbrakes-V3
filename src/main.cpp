@@ -1,26 +1,36 @@
 #include <Arduino.h>
-#include <baro.cpp>
-#include <imu.cpp>
-#include <rgb.cpp>
-#include <config.h>
 
-BARO baro;
-RGBLed led(24,23,22);
+#include "state.h"
+
+// Make setup blocking so core1 waits for hardware init.
+semaphore_t setup_done;
 
 void setup() {
-    baro.begin();
-    Serial.println(baro.isConnected());
+  sem_init(&setup_done, 0, 1);
+
+  setupHardware();
+  stateInit();
+
+  // Flash logging will be initialized when entering STATE_PAD
+
+  // Indicate setup done
+  sem_release(&setup_done);
 }
 
 void loop() {
-    Serial.println(baro.getAltitudeCm());
-    baro.update();
+  handleFlashCommands();
+  serviceOdrive();
+
+  // Update state machine
+  stateUpdate();
 }
 
 void setup1() {
-    led.setColor(0.0f, 0.5882352941f, 1.0f); // Bright Blue
+  // wait for core0 setup to finish
+  sem_acquire_blocking(&setup_done);
 }
 
 void loop1() {
-    led.rainbow(10);
+  // Update filter
+  estimatorUpdate();
 }

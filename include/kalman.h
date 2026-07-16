@@ -10,6 +10,8 @@ public:
     // dt = IMU update time
     Kalman(float dt);
 
+    // Re-initialize state and covariance (call at launch)
+    void reset();
 
     // IMU update
     void predict();
@@ -19,14 +21,13 @@ public:
     void update();
 
 
+    // Add a velocity increment (e.g. recovered pre-roll dv at launch)
+    void injectVelocity(float dv);
 
     float getAltitude();
     float getVelocity();
     float getBias();
     float getCorrectedAcceleration();
-
-    float getVerticalAcceleration();
-    float* getWorldAcceleration(float world[3]);
 
 
 

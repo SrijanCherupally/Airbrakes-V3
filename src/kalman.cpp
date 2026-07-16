@@ -1,104 +1,92 @@
 #include "kalman.h"
-#include <orientation.cpp>
+
 #include <math.h>
-#include <baro.cpp>
 
-BARO baro;
+#include "hardware.h"
+#include "orientation.h"
 
-Kalman::Kalman(float dt)
-{
-
-    this->dt = dt;
-
-
-    // Initial state
-
-    altitude = 0.0f;
-    velocity = 0.0f;
-    bias = 0.0f;
-
-
-
-    // Initial uncertainty
-
-    P[0][0] = 10.0f;   // altitude uncertainty
-    P[1][1] = 10.0f;   // velocity uncertainty
-    P[2][2] = 0.1f;    // bias uncertainty
-
-
-
-    // Process noisefad
-
-    Q_altitude = 0.01f;
-
-    Q_velocity = 0.1f;
-
-    Q_bias = 0.0001f;
-
-
-
-    // DPS368 noise
-
-    R_altitude = 2.0f;
-
+Kalman::Kalman(float dt) {
+  this->dt = dt;
+  reset();
 }
 
-void Kalman::predict()
-{
-    getWorldAcceleration(worldAcc);
+void Kalman::reset() {
+  // Initial state
+  altitude = 0.0f;
+  velocity = 0.0f;
+  bias = 0.0f;
+  correctedAcceleration = 0.0f;
 
-    float correctedAcceleration =
-        worldAcc[2] - bias;
+  worldAcc[0] = 0.0f;
+  worldAcc[1] = 0.0f;
+  worldAcc[2] = 0.0f;
 
-    float oldVelocity = velocity;
+  // Initial uncertainty
+  P[0][0] = 10.0f;  // altitude uncertainty
+  P[0][1] = 0.0f;
+  P[0][2] = 0.0f;
+  P[1][0] = 0.0f;
+  P[1][1] = 10.0f;  // velocity uncertainty
+  P[1][2] = 0.0f;
+  P[2][0] = 0.0f;
+  P[2][1] = 0.0f;
+  P[2][2] = 0.1f;  // bias uncertainty
 
-    velocity += correctedAcceleration * dt;
+  // Process noise
+  Q_altitude = 0.01f;
+  Q_velocity = 0.1f;
+  Q_bias = 0.0001f;
 
-    altitude +=
-        oldVelocity * dt +
-        0.5f * correctedAcceleration * dt * dt;
-
-    P[0][0] += Q_altitude;
-    P[1][1] += Q_velocity;
-    P[2][2] += Q_bias;
+  // DPS368 noise
+  R_altitude = 2.0f;
 }
 
-void Kalman::update()
-{
-    float altitudeMeasurement =
-        baro.getAltitudeM();
+void Kalman::predict() {
+  getWorldAcceleration(worldAcc);
 
-    float error =
-        altitudeMeasurement - altitude;
+  correctedAcceleration = worldAcc[2] - bias;
 
-    float K =
-        P[0][0] /
-        (P[0][0] + R_altitude);
+  float oldVelocity = velocity;
 
-    altitude += K * error;
+  velocity += correctedAcceleration * dt;
 
-    P[0][0] *= (1.0f - K);
+  altitude += oldVelocity * dt + 0.5f * correctedAcceleration * dt * dt;
 
-    bias += 0.001f * error;
+  P[0][0] += Q_altitude;
+  P[1][1] += Q_velocity;
+  P[2][2] += Q_bias;
 }
 
-float Kalman::getAltitude()
-{
-    return altitude;
+void Kalman::update() {
+  float altitudeMeasurement = baro.getAltitudeM();
+
+  float error = altitudeMeasurement - altitude;
+
+  float K = P[0][0] / (P[0][0] + R_altitude);
+
+  altitude += K * error;
+
+  P[0][0] *= (1.0f - K);
+
+  bias += 0.001f * error;
 }
 
-
-float Kalman::getVelocity()
-{
-    return velocity;
+void Kalman::injectVelocity(float dv) {
+  velocity += dv;
 }
 
-float Kalman::getBias()
-{
-    return bias;
+float Kalman::getAltitude() {
+  return altitude;
 }
 
-float Kalman::getCorrectedAcceleration()
-{
-    return correctedAcceleration;
+float Kalman::getVelocity() {
+  return velocity;
+}
+
+float Kalman::getBias() {
+  return bias;
+}
+
+float Kalman::getCorrectedAcceleration() {
+  return correctedAcceleration;
 }

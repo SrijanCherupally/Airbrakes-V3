@@ -1,10 +1,9 @@
-/*
 #include "flash.h"
 
 #include <LittleFS.h>
 
-//#include "estimator.h"
-//#include "state.h"
+#include "orientation.h"
+#include "state.h"
 
 // Binary data structure (68 bytes per record)
 struct __attribute__((packed)) FlightRecord {
@@ -319,5 +318,3 @@ void handleFlashCommands() {
     }
   }
 }
-
-*/
