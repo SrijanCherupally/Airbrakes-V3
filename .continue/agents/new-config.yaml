@@ -1,0 +1,17 @@
+{
+  "name": "Main Config",
+  "version": "1.0.0",
+  "schema": "v1",
+  "models": [
+    {
+      "title": "Qwen 2.5 7B (General)",
+      "provider": "ollama",
+      "model": "qwen2.5:7b"
+    }
+  ],
+  "tabAutocompleteModel": {
+    "title": "Qwen 2.5 Coder 1.5B (Autocomplete)",
+    "provider": "ollama",
+    "model": "qwen2.5-coder:1.5b"
+  }
+}
