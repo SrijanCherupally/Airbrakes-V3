@@ -20,7 +20,7 @@
 #define CAN_SCK 18
 #define CAN_MOSI 19
 #define CAN_INT 20
-#define MCP2515_CLK_HZ 16000000
+#define MCP2515_CLK_HZ 20000000
 #define CAN_BAUDRATE 250000
 #define ODRV_NODE_ID 0
 
@@ -45,5 +45,6 @@ void EnableOdrv();
 void odrvPosition(float pos);
 void serviceOdrive();
 bool odriveHeartbeatFresh();
+void pollCanDebug();  // TEMP DEBUG: remove once heartbeat issue is solved
 
 #endif  // HARDWARE_H

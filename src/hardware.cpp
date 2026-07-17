@@ -98,6 +98,21 @@ void setupHardware() {
   }
 
   CAN.onReceive(canCallback);
+
+  // TEMP DEBUG: also poll manually so we can tell whether the INT pin is
+  // the problem (frames arrive but interrupt never fires) vs. genuinely
+  // no traffic on the bus at all. Remove once heartbeat issue is solved.
+  Serial.println("CAN setup complete, entering poll-test mode");
+}
+
+void pollCanDebug() {
+  int packetSize = CAN.parsePacket();
+  if (packetSize) {
+    Serial.print("POLL: CAN RX id=0x");
+    Serial.print(CAN.packetId(), HEX);
+    Serial.print(" len=");
+    Serial.println(packetSize);
+  }
 }
 
 void EnableOdrv() {
