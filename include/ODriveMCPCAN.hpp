@@ -33,17 +33,27 @@ static bool sendMsg(MCP2515Class& can_intf, uint32_t id, uint8_t length, const u
     return can_intf.endPacket();
 }
 
-static void onReceive(const CanMsg& msg, ODriveCAN& odrive) {
-    odrive.onReceive(msg.id, msg.len, msg.buffer);
-}
-
 static void pumpEvents(MCP2515Class& intf) {
-    // On other platforms, this polls and processes incoming CAN messages.
-    // However, this is not possible on MCP2515-based platforms.
-    //
-    // A 10ms delay was found to reduce the number of dropped messages, however a
-    // specific root cause has not been identified, and may be a quirk in the MCP2515.
-    delay(10);
+    // Poll the MCP2515 directly. This makes ODrive reception independent of
+    // the controller's INT pin and also services replies while request() is
+    // waiting for them.
+    while (true) {
+        int packet_size = intf.parsePacket();
+        if (packet_size <= 0) {
+            return;
+        }
+        if (packet_size > 8) {
+            while (intf.available()) intf.read();
+            continue;
+        }
+
+        CanMsg msg = {
+            .id = static_cast<uint32_t>(intf.packetId()),
+            .len = static_cast<uint8_t>(packet_size),
+        };
+        intf.readBytes(msg.buffer, msg.len);
+        onCanMessage(msg);
+    }
 }
 
 CREATE_CAN_INTF_WRAPPER(MCP2515Class)

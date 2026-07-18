@@ -45,6 +45,5 @@ void EnableOdrv();
 void odrvPosition(float pos);
 void serviceOdrive();
 bool odriveHeartbeatFresh();
-void pollCanDebug();  // TEMP DEBUG: remove once heartbeat issue is solved
 
 #endif  // HARDWARE_H

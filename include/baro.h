@@ -9,9 +9,10 @@
 #define DPS368_SDA 4
 #define dpsWire Wire
 
-// DPS368 I2C address: 0x77 if SDO pin is high (or floating/pulled up),
-// 0x76 if SDO pin is tied to GND. Change this if your board wires SDO low.
-#define DPS368_I2C_ADDR 0x77
+// DPS368 I2C address: 0x77 if SDO is high, 0x76 if it is low. The driver
+// probes both addresses at startup, so either board variant is supported.
+#define DPS368_I2C_ADDR_HIGH 0x77
+#define DPS368_I2C_ADDR_LOW 0x76
 
 // ---------- REGISTERS ----------
 #define REG_PRS_B2 0x00
@@ -35,7 +36,7 @@ class BARO {
  public:
   BARO() {}
 
-  void begin();
+  bool begin();
   bool update();
   bool isConnected();
 
@@ -60,8 +61,11 @@ class BARO {
 
   int32_t rawT = 0, rawP = 0;
   float tempC = 0.0f, pressurePa = 0.0f, altitude_cm = 0.0f;
+  uint8_t i2cAddress = DPS368_I2C_ADDR_HIGH;
+  bool initialized = false;
 
-  void init();
+  bool init();
+  bool selectAddress();
 
   // I2C helpers
   void dpsWrite(uint8_t reg, uint8_t val);
