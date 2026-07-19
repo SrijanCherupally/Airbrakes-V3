@@ -11,7 +11,7 @@ constexpr uint8_t kCanCsPin = 17;
 constexpr uint8_t kCanSckPin = 18;
 constexpr uint8_t kCanMosiPin = 19;
 constexpr uint8_t kCanIntPin = 20;
-constexpr uint32_t kMcp2515ClockHz = 16000000;
+constexpr uint32_t kMcp2515ClockHz = 20000000;
 constexpr long kCanBaudRate = 250000;
 
 constexpr uint8_t kODriveNodeId = 0;
