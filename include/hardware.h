@@ -20,7 +20,8 @@
 #define CAN_SCK 18
 #define CAN_MOSI 19
 #define CAN_INT 20
-#define MCP2515_CLK_HZ 20000000
+#define MCP2515_CLK_HZ 20000000  // 20 MHz crystal (see lib/CAN, a fork of
+                                 // sandeepmistry/CAN with 20 MHz support)
 #define CAN_BAUDRATE 250000
 #define ODRV_NODE_ID 0
 
