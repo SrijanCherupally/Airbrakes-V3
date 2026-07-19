@@ -2,11 +2,13 @@
 
 #include <math.h>
 
-void BARO::begin() {
-  init();
+bool BARO::begin() {
+  initialized = init();
+  return initialized;
 }
 
 bool BARO::update() {
+  if (!initialized) return false;
   if (!waitForFlags(MEAS_PRS_RDY | MEAS_TMP_RDY, 100)) return false;
   rawT = readTempRaw();
   rawP = readPressureRaw();
@@ -18,20 +20,23 @@ bool BARO::update() {
 }
 
 bool BARO::isConnected() {
-  uint8_t prodId = dpsRead8(REG_PROD_ID);
-  return prodId == 0x10;  // DPS368 product ID is 0x10
+  return initialized;
 }
 
-void BARO::init() {
+bool BARO::init() {
   dpsWire.setSCL(DPS368_SCL);
   dpsWire.setSDA(DPS368_SDA);
   dpsWire.begin();
   dpsWire.setClock(400000);  // 400kHz fast mode
 
+  if (!selectAddress()) return false;
+
   dpsWrite(REG_RESET, 0x09);
   delay(50);
-  waitForFlags(MEAS_SENSOR_RDY, 100);
-  waitForFlags(MEAS_COEF_RDY, 100);
+  if (!waitForFlags(MEAS_SENSOR_RDY, 100) ||
+      !waitForFlags(MEAS_COEF_RDY, 100)) {
+    return false;
+  }
 
   readCoefficients();
 
@@ -48,34 +53,47 @@ void BARO::init() {
   dpsWrite(REG_MEAS_CFG, 0x07);
 
   // Set baseline
-  waitForFlags(MEAS_PRS_RDY | MEAS_TMP_RDY, 100);
+  if (!waitForFlags(MEAS_PRS_RDY | MEAS_TMP_RDY, 100)) return false;
   rawT = readTempRaw();
   rawP = readPressureRaw();
   baselinePressure = calcPressurePa(rawP, rawT);
+  return isfinite(baselinePressure) && baselinePressure > 1000.0f;
+}
+
+bool BARO::selectAddress() {
+  const uint8_t addresses[] = {DPS368_I2C_ADDR_HIGH, DPS368_I2C_ADDR_LOW};
+  for (uint8_t address : addresses) {
+    dpsWire.beginTransmission(address);
+    if (dpsWire.endTransmission() != 0) continue;
+
+    i2cAddress = address;
+    if (dpsRead8(REG_PROD_ID) == 0x10) return true;
+  }
+  return false;
 }
 
 void BARO::dpsWrite(uint8_t reg, uint8_t val) {
-  dpsWire.beginTransmission(DPS368_I2C_ADDR);
+  dpsWire.beginTransmission(i2cAddress);
   dpsWire.write(reg);
   dpsWire.write(val);
   dpsWire.endTransmission();
 }
 
 uint8_t BARO::dpsRead8(uint8_t reg) {
-  dpsWire.beginTransmission(DPS368_I2C_ADDR);
+  dpsWire.beginTransmission(i2cAddress);
   dpsWire.write(reg);
   dpsWire.endTransmission(false);  // repeated start, keep bus held
-  dpsWire.requestFrom(DPS368_I2C_ADDR, (uint8_t)1);
+  dpsWire.requestFrom(i2cAddress, (uint8_t)1);
   uint8_t val = 0;
   if (dpsWire.available()) val = dpsWire.read();
   return val;
 }
 
 void BARO::dpsReadBlock(uint8_t reg, uint8_t *buf, uint8_t len) {
-  dpsWire.beginTransmission(DPS368_I2C_ADDR);
+  dpsWire.beginTransmission(i2cAddress);
   dpsWire.write(reg);
   dpsWire.endTransmission(false);  // repeated start, keep bus held
-  dpsWire.requestFrom(DPS368_I2C_ADDR, len);
+  dpsWire.requestFrom(i2cAddress, len);
   for (uint8_t i = 0; i < len && dpsWire.available(); i++) {
     buf[i] = dpsWire.read();
   }
