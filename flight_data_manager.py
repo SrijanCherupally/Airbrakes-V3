@@ -30,7 +30,7 @@ RECORD_SIZE = struct.calcsize(RECORD_FORMAT)
 
 # Matches platformio.ini's usb_manufacturer/usb_product for this board.
 USB_MANUFACTURER = "Srijan"
-USB_PRODUCT = "AIrbrakes V3"
+USB_PRODUCT = "Airbrakes V3"
 
 # CSV header must match the field order in RECORD_FORMAT above.
 CSV_HEADER = (
