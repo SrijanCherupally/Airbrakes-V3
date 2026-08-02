@@ -29,12 +29,15 @@ import firmware
 import plotting
 import serial_link
 
-THEME = "superhero"          # dark, blue-accented bootstrap theme
-CONSOLE_BG = "#1a2029"
-CONSOLE_FG = "#5fd77f"
-LIST_BG = "#232a34"
-LIST_FG = "#e5e9f0"
-LIST_SELECT_BG = "#2f61d6"
+THEME = "minty"  # fresh, soft green-accented theme for a clean UI
+# Font and color tokens used across the UI for a consistent look
+FONT_HEADER = ("Segoe UI", 16, "bold")
+FONT_NORMAL = ("Segoe UI", 10)
+CONSOLE_BG = "#f6f9f8"
+CONSOLE_FG = "#0b3d2e"
+LIST_BG = "#eaf3ee"
+LIST_FG = "#0b2b1f"
+LIST_SELECT_BG = "#78c2a4"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".airbrakes_ground_station")
 APP_CONFIG_PATH = os.path.join(APP_DIR, "app_config.json")
@@ -101,14 +104,15 @@ class App(ttk.Window):
             self.after(200, self._first_run_prompt)
 
     def _build_header(self):
-        header = ttk.Frame(self, bootstyle=SECONDARY, padding=(16, 10))
+        # Prominent, well-spaced header with a compact connection indicator
+        header = ttk.Frame(self, bootstyle="primary", padding=(20, 12))
         header.pack(fill="x")
-        ttk.Label(header, text="🚀 Airbrakes V3", font=("", 16, "bold"),
-                  bootstyle="inverse-secondary").pack(side="left")
-        ttk.Label(header, text="  Ground Station", font=("", 16),
-                  bootstyle="inverse-secondary").pack(side="left")
+        ttk.Label(header, text="🚀 Airbrakes V3", font=FONT_HEADER,
+                  bootstyle="inverse-primary").pack(side="left")
+        ttk.Label(header, text="Ground Station", font=("", 12),
+                  bootstyle="inverse-primary", foreground="#0b3d2e").pack(side="left", padx=(8, 0))
         self.conn_dot = ttk.Label(header, text="●  Not connected",
-                                   bootstyle="inverse-secondary", foreground="#e05260")
+                                   bootstyle="inverse-primary", foreground="#e05260")
         self.conn_dot.pack(side="right")
 
     # ---------- setup / chrome ----------
@@ -246,19 +250,30 @@ class App(ttk.Window):
         ttk.Button(actions, text="Pre-flight check (INFO)",
                    command=self._run_preflight_check, bootstyle=INFO).pack(side="left", padx=4)
 
-        self.console = tk.Text(right, height=25, bg=CONSOLE_BG, fg=CONSOLE_FG,
-                                insertbackground=CONSOLE_FG, relief="flat",
-                                font=("Menlo", 11) if os.name != "nt" else ("Consolas", 10),
-                                padx=8, pady=6, borderwidth=0, highlightthickness=1,
-                                highlightbackground="#3a4454")
-        self.console.pack(fill="both", expand=True, pady=4)
+        # Console area with a slim progress bar, status line, and a clearable log
+        console_frame = ttk.Frame(right, bootstyle="secondary", padding=6)
+        console_frame.pack(fill="both", expand=True, pady=4)
 
-        input_row = ttk.Frame(right)
-        input_row.pack(fill="x")
-        self.console_input = ttk.Entry(input_row)
-        self.console_input.pack(side="left", fill="x", expand=True)
+        self.progress = ttk.Progressbar(console_frame, mode="indeterminate", bootstyle="info")
+        self.progress.pack(fill="x", pady=(0, 6))
+
+        self.console_status = ttk.Label(console_frame, text="Idle", font=("", 10), foreground="#0b3d2e")
+        self.console_status.pack(anchor="w", pady=(0, 6))
+
+        self.console = tk.Text(console_frame, height=15, bg=CONSOLE_BG, fg=CONSOLE_FG,
+                                insertbackground=CONSOLE_FG, relief="flat",
+                                font=("Consolas", 10) if os.name == "nt" else ("Menlo", 11),
+                                padx=8, pady=6, borderwidth=0, highlightthickness=1,
+                                highlightbackground="#d1e7df")
+        self.console.pack(fill="both", expand=True)
+
+        btn_row = ttk.Frame(console_frame)
+        btn_row.pack(fill="x", pady=(6, 0))
+        ttk.Button(btn_row, text="Clear", command=lambda: self.console.delete("1.0", "end"), bootstyle=SECONDARY).pack(side="left")
+        self.console_input = ttk.Entry(btn_row)
+        self.console_input.pack(side="left", fill="x", expand=True, padx=6)
         self.console_input.bind("<Return>", self._send_console_input)
-        ttk.Button(input_row, text="Send", command=self._send_console_input).pack(side="left")
+        ttk.Button(btn_row, text="Send", command=self._send_console_input, bootstyle=PRIMARY).pack(side="left")
 
         self._config_fields_widgets = {}
         self._reload_config_tab()
@@ -266,6 +281,20 @@ class App(ttk.Window):
     def _log(self, text):
         self.console.insert("end", text + "\n")
         self.console.see("end")
+
+    def _start_progress(self, message="Working..."):
+        try:
+            self.progress.start(10)
+            self.console_status.config(text=message)
+        except Exception:
+            pass
+
+    def _stop_progress(self, final_message="Idle"):
+        try:
+            self.progress.stop()
+            self.console_status.config(text=final_message)
+        except Exception:
+            pass
 
     def _send_console_input(self, event=None):
         text = self.console_input.get()
@@ -310,7 +339,11 @@ class App(ttk.Window):
             self._config_fields_widgets[field.name] = var
 
         try:
-            defaults = coast_table_tool.current_defaults(self.repo_path)
+            saved = self.app_cfg.get("last_launch_conditions")
+            if saved:
+                defaults = saved
+            else:
+                defaults = coast_table_tool.current_defaults(self.repo_path)
             self.cond_vars["mass_kg"].set(defaults["mass_kg"])
             self.cond_vars["temp_f"].set(defaults["temp_f"])
             self.cond_vars["humidity_pct"].set(defaults["humidity_pct"])
@@ -342,18 +375,30 @@ class App(ttk.Window):
 
         self._log(f"Regenerating coast table: mass={mass_kg} kg, temp={temp_f}F, "
                    f"humidity={humidity_pct}%, pressure={pressure_hpa} hPa ...")
+        self._start_progress("Regenerating coast table...")
+
+        def on_line_cb(line):
+            # show detailed running status and keep the console log updated
+            self.after(0, lambda: (self._log(line), self.console_status.config(text=line[:200])))
 
         def task():
             return coast_table_tool.regenerate(
                 self.repo_path, mass_kg, temp_f, humidity_pct, pressure_hpa,
-                on_line=lambda l: self.after(0, self._log, l))
+                on_line=on_line_cb)
 
         def done(result, err):
             if err:
                 self._log(f"Coast table generation failed: {err}")
+                self._stop_progress("Coast table failed")
             else:
+                self.app_cfg["last_launch_conditions"] = {
+                    "mass_kg": mass_kg, "temp_f": temp_f,
+                    "humidity_pct": humidity_pct, "pressure_hpa": pressure_hpa,
+                }
+                save_app_config(self.app_cfg)
                 self._coast_table_cache = None  # force reload on next plot
                 self._reload_config_tab()  # MASS/RHO in config.h just changed
+                self._stop_progress("Coast table regenerated")
 
         run_in_background(self, task, done)
 
@@ -365,10 +410,20 @@ class App(ttk.Window):
                        "    pip install platformio\nthen retry.")
             return
         self._log("$ pio run")
+        self._start_progress("Building firmware...")
+
+        def on_line(l):
+            # update the console and a short status line so the user sees what's happening
+            self.after(0, lambda: (self._log(l), self.console_status.config(text=l[:200])))
+
+        def on_exit(code):
+            def finish():
+                self._log(f"[build exited with code {code}]")
+                self._stop_progress("Build finished" if code == 0 else f"Build failed (exit {code})")
+            self.after(0, finish)
+
         self.live_process = firmware.build_firmware(
-            self.repo_path, on_line=lambda l: self.after(0, self._log, l),
-            on_exit=lambda code: self.after(
-                0, self._log, f"[build exited with code {code}]"))
+            self.repo_path, on_line=on_line, on_exit=on_exit)
 
     def _run_upload(self):
         if not self.repo_path:
@@ -382,17 +437,59 @@ class App(ttk.Window):
             self.link.close()
             self.link = None
         self._log("$ pio run -t upload")
+        self._start_progress("Flashing firmware to device...")
+
+        def on_line(l):
+            self.after(0, lambda: (self._log(l), self.console_status.config(text=l[:200])))
+
+        def on_exit(code):
+            def finish():
+                self._log(f"[upload exited with code {code}]")
+                self._stop_progress("Upload finished" if code == 0 else f"Upload failed (exit {code})")
+            self.after(0, finish)
+
         self.live_process = firmware.upload_firmware(
-            self.repo_path, on_line=lambda l: self.after(0, self._log, l),
-            on_exit=lambda code: self.after(
-                0, self._log, f"[upload exited with code {code}]"))
+            self.repo_path, on_line=on_line, on_exit=on_exit)
 
     def _run_preflight_check(self):
-        port = serial_link.find_board()
-        if not port:
-            self._log("Couldn't auto-detect the board. Plug it in and try again, "
-                       "or check the Post-Flight tab's port dropdown.")
+        # If we're already connected (e.g. via the Post-Flight tab), reuse
+        # that connection — opening a second one to the same port will
+        # fail, since the OS won't let two handles hold it open at once.
+        if self.link:
+            self._log("Using existing connection for INFO check...")
+
+            def task():
+                return self.link.get_info()
+
+            def done(result, err):
+                if err:
+                    self._log(f"Pre-flight check failed: {err}")
+                else:
+                    self._log(f"Storage OK: {result}")
+                    self._log("Board responded — looks flight-ready from the software side.")
+
+            run_in_background(self, task, done)
             return
+
+        # Not connected yet: prefer whatever port is selected on the
+        # Post-Flight tab, otherwise try auto-detection.
+        port = self._selected_port() if hasattr(self, "port_var") else None
+        if not port:
+            port = serial_link.find_board()
+
+        if not port:
+            available = serial_link.list_ports()
+            if available:
+                listing = "\n".join(f"  - {dev}  ({desc})" for dev, desc in available)
+                self._log("Couldn't auto-detect the board by USB descriptor. "
+                           "Ports found:\n" + listing +
+                           "\nGo to the Post-Flight tab, pick the right port from "
+                           "the dropdown, click Connect, then retry this check.")
+            else:
+                self._log("No serial ports found at all — check the USB cable/port, "
+                           "and that the board is powered on.")
+            return
+
         self._log(f"Connecting to {port} for a pre-flight INFO check...")
 
         def task():
@@ -403,7 +500,7 @@ class App(ttk.Window):
 
         def done(result, err):
             if err:
-                self._log(f"Pre-flight check failed: {err}")
+                self._log(f"Pre-flight check failed on {port}: {err}")
             else:
                 self._log(f"Storage OK: {result}")
                 self._log("Board responded — looks flight-ready from the software side.")
@@ -445,7 +542,7 @@ class App(ttk.Window):
                                        selectbackground=LIST_SELECT_BG,
                                        selectforeground="white", relief="flat",
                                        borderwidth=0, highlightthickness=1,
-                                       highlightbackground="#3a4454",
+                                       highlightbackground="#d1e7df",
                                        font=("", 11))
         self.flight_list.pack(fill="both", expand=True, padx=8, pady=4)
 
@@ -536,6 +633,7 @@ class App(ttk.Window):
             messagebox.showwarning("No selection", "Select a flight in the list first.")
             return
         self.postflight_status.config(text=f"Downloading flight {num}...")
+        self._start_progress(f"Downloading flight {num}...")
 
         def task():
             records = self.link.download_flight(num)
@@ -552,9 +650,11 @@ class App(ttk.Window):
         def done(result, err):
             if err:
                 self.postflight_status.config(text=f"Download failed: {err}")
+                self._stop_progress("Download failed")
             else:
                 self.postflight_status.config(text=f"Saved to {result}")
                 self._refresh_history()
+                self._stop_progress("Download complete")
 
         run_in_background(self, task, done)
 
@@ -566,6 +666,8 @@ class App(ttk.Window):
             return
 
         nums = [f["num"] for f in self._flights_on_device if f["num"] is not None]
+
+        self._start_progress(f"Downloading {len(nums)} flight(s)...")
 
         def task():
             saved = []
@@ -584,10 +686,12 @@ class App(ttk.Window):
         def done(result, err):
             if err:
                 self.postflight_status.config(text=f"Download-all failed partway: {err}")
+                self._stop_progress("Download failed")
             else:
                 self.postflight_status.config(text=f"Downloaded {len(result)} flight(s).")
                 self._refresh_history()
                 self._list_flights()
+                self._stop_progress("Download complete")
 
         run_in_background(self, task, done)
 
@@ -625,7 +729,7 @@ class App(ttk.Window):
                                         selectbackground=LIST_SELECT_BG,
                                         selectforeground="white", relief="flat",
                                         borderwidth=0, highlightthickness=1,
-                                        highlightbackground="#3a4454",
+                                        highlightbackground="#d1e7df",
                                         font=("", 10))
         self.history_list.pack(fill="y", expand=True)
         self.history_list.bind("<<ListboxSelect>>", lambda e: self._render_plot())

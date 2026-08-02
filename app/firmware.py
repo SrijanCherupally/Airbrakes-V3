@@ -14,6 +14,7 @@ types in an input box straight to the subprocess — so it behaves like an
 embedded terminal without the user ever opening one themselves.
 """
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -66,17 +67,48 @@ def _env_with_utf8():
     return env
 
 
-def check_platformio_installed():
+def _platformio_importable():
+    """True if the SAME Python running this app can import platformio —
+    this is independent of PATH, so it's true right after
+    `pip install platformio` even before any shell restart."""
+    try:
+        return importlib.util.find_spec("platformio") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _pio_command():
+    """
+    Returns the argv prefix to invoke PlatformIO with. Prefers
+    `<this python> -m platformio`, since that only depends on the package
+    being pip-installed into this interpreter — not on the `pio` console
+    script being on PATH (which is the #1 source of "pio not found" after
+    a successful `pip install platformio`, especially when launched via a
+    double-click launcher that may not inherit a full shell PATH).
+    Falls back to the bare `pio` command if the module isn't importable
+    but something named `pio` is on PATH anyway (e.g. installed via a
+    different mechanism, like a system package or PlatformIO Core installer).
+    """
+    if _platformio_importable():
+        return [sys.executable, "-m", "platformio"]
     from shutil import which
-    return which("pio") is not None
+    if which("pio"):
+        return ["pio"]
+    return None
+
+
+def check_platformio_installed():
+    return _pio_command() is not None
 
 
 def build_firmware(repo_path, on_line, on_exit=None):
-    return LiveProcess(["pio", "run"], cwd=repo_path, on_line=on_line, on_exit=on_exit)
+    cmd = _pio_command()
+    return LiveProcess(cmd + ["run"], cwd=repo_path, on_line=on_line, on_exit=on_exit)
 
 
 def upload_firmware(repo_path, on_line, on_exit=None):
-    return LiveProcess(["pio", "run", "-t", "upload"], cwd=repo_path,
+    cmd = _pio_command()
+    return LiveProcess(cmd + ["run", "-t", "upload"], cwd=repo_path,
                         on_line=on_line, on_exit=on_exit)
 
 
