@@ -67,6 +67,30 @@ class FlightComputerLink:
         except Exception:
             pass
 
+    def read_available_lines(self, limit=40):
+        """Read already-buffered text without waiting.
+
+        The ground-station monitor uses this between commands so it never
+        blocks the UI. Protocol responses are still handled by the command
+        methods; callers should pause the monitor while a command is active.
+        """
+        lines = []
+        # Never let the GUI monitor wait on the normal command timeout.  A
+        # boot/status message can be split across USB packets; temporarily
+        # use a short read timeout and restore the command timeout afterwards.
+        old_timeout = self.ser.timeout
+        try:
+            self.ser.timeout = 0.05
+            for _ in range(limit):
+                if not self.ser.in_waiting:
+                    break
+                line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+                if line:
+                    lines.append(line)
+        finally:
+            self.ser.timeout = old_timeout
+        return lines
+
     def _send(self, cmd):
         self.ser.reset_input_buffer()
         self.ser.write((cmd + "\n").encode())

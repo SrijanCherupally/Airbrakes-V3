@@ -29,15 +29,30 @@ import firmware
 import plotting
 import serial_link
 
-THEME = "minty"  # fresh, soft green-accented theme for a clean UI
-# Font and color tokens used across the UI for a consistent look
-FONT_HEADER = ("Segoe UI", 16, "bold")
+THEME = "darkly"
+# A small, deliberate visual system keeps native ttk surfaces and custom
+# widgets from drifting apart. The UI is intentionally dark so status and
+# telemetry remain legible in a dim launch-room environment.
+FONT_HEADER = ("Segoe UI", 17, "bold")
+FONT_TITLE = ("Segoe UI", 12, "bold")
 FONT_NORMAL = ("Segoe UI", 10)
-CONSOLE_BG = "#f6f9f8"
-CONSOLE_FG = "#0b3d2e"
-LIST_BG = "#eaf3ee"
-LIST_FG = "#0b2b1f"
-LIST_SELECT_BG = "#78c2a4"
+FONT_SMALL = ("Segoe UI", 9)
+FONT_MONO = ("Cascadia Mono", 9)
+SURFACE = "#202833"
+SURFACE_RAISED = "#283341"
+SURFACE_SOFT = "#313d4b"
+APP_BG = "#141a22"
+TEXT = "#edf5f2"
+MUTED = "#98a9ad"
+ACCENT = "#48d6b1"
+ACCENT_SOFT = "#214d4b"
+WARNING = "#f2c66d"
+DANGER = "#ef7d88"
+CONSOLE_BG = "#111820"
+CONSOLE_FG = "#b9f6df"
+LIST_BG = "#1a222c"
+LIST_FG = "#e5efec"
+LIST_SELECT_BG = "#287b70"
 
 APP_DIR = os.path.join(os.path.expanduser("~"), ".airbrakes_ground_station")
 APP_CONFIG_PATH = os.path.join(APP_DIR, "app_config.json")
@@ -86,6 +101,8 @@ class App(ttk.Window):
         self.title("Airbrakes V3 Ground Station")
         self.geometry("1200x780")
         self.minsize(1000, 650)
+        self.configure(background=APP_BG)
+        self._configure_styles()
 
         self.app_cfg = load_app_config()
         self.repo_path = self.app_cfg.get("repo_path")
@@ -95,6 +112,9 @@ class App(ttk.Window):
 
         self.link = None          # active serial_link.FlightComputerLink
         self.live_process = None  # active firmware.LiveProcess
+        self._serial_monitor_after = None
+        self._serial_monitor_paused = False
+        self._serial_lines = 0
 
         self._build_menu()
         self._build_header()
@@ -103,16 +123,35 @@ class App(ttk.Window):
         if not self.repo_path or not os.path.isdir(self.repo_path):
             self.after(200, self._first_run_prompt)
 
+    def _configure_styles(self):
+        style = ttk.Style()
+        style.configure("TFrame", background=APP_BG)
+        style.configure("Card.TFrame", background=SURFACE)
+        style.configure("Raised.TFrame", background=SURFACE_RAISED)
+        style.configure("TLabel", background=APP_BG, foreground=TEXT, font=FONT_NORMAL)
+        style.configure("Muted.TLabel", background=APP_BG, foreground=MUTED, font=FONT_SMALL)
+        style.configure("Card.TLabel", background=SURFACE, foreground=TEXT, font=FONT_NORMAL)
+        style.configure("CardTitle.TLabel", background=SURFACE, foreground=TEXT, font=FONT_TITLE)
+        style.configure("Status.TLabel", background=SURFACE_RAISED, foreground=ACCENT, font=FONT_NORMAL)
+        style.configure("TNotebook", background=APP_BG, borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(18, 9), font=FONT_NORMAL)
+        style.configure("TButton", font=FONT_NORMAL, padding=(12, 7))
+        style.configure("TEntry", fieldbackground=SURFACE_SOFT, foreground=TEXT)
+        style.configure("TCombobox", fieldbackground=SURFACE_SOFT, foreground=TEXT)
+        style.configure("Horizontal.TProgressbar", troughcolor=SURFACE_SOFT,
+                        background=ACCENT, bordercolor=SURFACE_SOFT,
+                        lightcolor=ACCENT, darkcolor=ACCENT)
+
     def _build_header(self):
         # Prominent, well-spaced header with a compact connection indicator
-        header = ttk.Frame(self, bootstyle="primary", padding=(20, 12))
+        header = ttk.Frame(self, style="Raised.TFrame", padding=(24, 16))
         header.pack(fill="x")
         ttk.Label(header, text="🚀 Airbrakes V3", font=FONT_HEADER,
                   bootstyle="inverse-primary").pack(side="left")
         ttk.Label(header, text="Ground Station", font=("", 12),
                   bootstyle="inverse-primary", foreground="#0b3d2e").pack(side="left", padx=(8, 0))
-        self.conn_dot = ttk.Label(header, text="●  Not connected",
-                                   bootstyle="inverse-primary", foreground="#e05260")
+        self.conn_dot = ttk.Label(header, text="●  OFFLINE",
+                                   style="Status.TLabel", foreground=DANGER)
         self.conn_dot.pack(side="right")
 
     # ---------- setup / chrome ----------
@@ -153,7 +192,7 @@ class App(ttk.Window):
 
     def _build_layout(self):
         nb = ttk.Notebook(self, bootstyle=PRIMARY)
-        nb.pack(fill="both", expand=True, padx=10, pady=(10, 10))
+        nb.pack(fill="both", expand=True, padx=18, pady=(14, 18))
 
         self.tab_preflight = ttk.Frame(nb)
         self.tab_postflight = ttk.Frame(nb)
@@ -251,14 +290,23 @@ class App(ttk.Window):
                    command=self._run_preflight_check, bootstyle=INFO).pack(side="left", padx=4)
 
         # Console area with a slim progress bar, status line, and a clearable log
-        console_frame = ttk.Frame(right, bootstyle="secondary", padding=6)
+        console_frame = ttk.Frame(right, style="Card.TFrame", padding=14)
         console_frame.pack(fill="both", expand=True, pady=4)
 
-        self.progress = ttk.Progressbar(console_frame, mode="indeterminate", bootstyle="info")
-        self.progress.pack(fill="x", pady=(0, 6))
+        activity_head = ttk.Frame(console_frame, style="Card.TFrame")
+        activity_head.pack(fill="x")
+        ttk.Label(activity_head, text="ACTIVITY", style="CardTitle.TLabel").pack(side="left")
+        self.activity_meta = ttk.Label(activity_head, text="Ready when you are",
+                                       style="Card.TLabel", foreground=MUTED)
+        self.activity_meta.pack(side="right")
 
-        self.console_status = ttk.Label(console_frame, text="Idle", font=("", 10), foreground="#0b3d2e")
-        self.console_status.pack(anchor="w", pady=(0, 6))
+        self.progress = ttk.Progressbar(console_frame, mode="indeterminate",
+                                        style="Horizontal.TProgressbar")
+        self.progress.pack(fill="x", pady=(10, 8))
+
+        self.console_status = ttk.Label(console_frame, text="Standing by",
+                                        style="Status.TLabel")
+        self.console_status.pack(anchor="w", pady=(0, 10))
 
         self.console = tk.Text(console_frame, height=15, bg=CONSOLE_BG, fg=CONSOLE_FG,
                                 insertbackground=CONSOLE_FG, relief="flat",
@@ -266,10 +314,17 @@ class App(ttk.Window):
                                 padx=8, pady=6, borderwidth=0, highlightthickness=1,
                                 highlightbackground="#d1e7df")
         self.console.pack(fill="both", expand=True)
+        self.console.configure(state="disabled")
+        self.console_details_visible = True
+
+        self.console_toggle = ttk.Button(console_frame, text="Hide technical details",
+                                         command=self._toggle_console, bootstyle="secondary-outline")
+        self.console_toggle.pack(anchor="e", pady=(8, 0))
 
         btn_row = ttk.Frame(console_frame)
         btn_row.pack(fill="x", pady=(6, 0))
-        ttk.Button(btn_row, text="Clear", command=lambda: self.console.delete("1.0", "end"), bootstyle=SECONDARY).pack(side="left")
+        ttk.Button(btn_row, text="Clear activity", command=self._clear_console,
+                   bootstyle=SECONDARY).pack(side="left")
         self.console_input = ttk.Entry(btn_row)
         self.console_input.pack(side="left", fill="x", expand=True, padx=6)
         self.console_input.bind("<Return>", self._send_console_input)
@@ -279,13 +334,35 @@ class App(ttk.Window):
         self._reload_config_tab()
 
     def _log(self, text):
+        self.console.configure(state="normal")
         self.console.insert("end", text + "\n")
         self.console.see("end")
+        self.console.configure(state="disabled")
+        self._serial_lines += 1
+        if hasattr(self, "activity_meta"):
+            self.activity_meta.config(text=f"{self._serial_lines} event(s) recorded")
+
+    def _clear_console(self):
+        self.console.configure(state="normal")
+        self.console.delete("1.0", "end")
+        self.console.configure(state="disabled")
+        self._serial_lines = 0
+        self.activity_meta.config(text="No recent events")
+
+    def _toggle_console(self):
+        self.console_details_visible = not self.console_details_visible
+        if self.console_details_visible:
+            self.console.pack(fill="both", expand=True)
+            self.console_toggle.config(text="Hide technical details")
+        else:
+            self.console.pack_forget()
+            self.console_toggle.config(text="Show technical details")
 
     def _start_progress(self, message="Working..."):
         try:
             self.progress.start(10)
             self.console_status.config(text=message)
+            self.activity_meta.config(text="Live operation")
         except Exception:
             pass
 
@@ -293,6 +370,7 @@ class App(ttk.Window):
         try:
             self.progress.stop()
             self.console_status.config(text=final_message)
+            self.activity_meta.config(text="Ready for next operation")
         except Exception:
             pass
 
@@ -511,10 +589,11 @@ class App(ttk.Window):
 
     def _build_postflight_tab(self):
         frame = self.tab_postflight
-        top = ttk.Frame(frame)
+        top = ttk.Frame(frame, style="Card.TFrame", padding=14)
         top.pack(fill="x", padx=8, pady=4)
 
-        ttk.Label(top, text="Port:").pack(side="left")
+        ttk.Label(top, text="BOARD CONNECTION", style="CardTitle.TLabel").pack(side="left", padx=(0, 16))
+        ttk.Label(top, text="Port:", style="Card.TLabel").pack(side="left")
         self.port_var = tk.StringVar()
         self.port_combo = ttk.Combobox(top, textvariable=self.port_var, width=30)
         self.port_combo.pack(side="left", padx=4)
@@ -524,10 +603,10 @@ class App(ttk.Window):
                    bootstyle=SUCCESS).pack(side="left", padx=4)
         ttk.Button(top, text="Disconnect", command=self._disconnect,
                    bootstyle="secondary-outline").pack(side="left")
-        self.conn_status = ttk.Label(top, text="Not connected", foreground="#e05260")
+        self.conn_status = ttk.Label(top, text="Not connected", style="Card.TLabel", foreground=DANGER)
         self.conn_status.pack(side="left", padx=10)
 
-        mid = ttk.Frame(frame)
+        mid = ttk.Frame(frame, style="Card.TFrame", padding=(14, 0, 14, 10))
         mid.pack(fill="x", padx=8)
         ttk.Button(mid, text="List flights on device",
                    command=self._list_flights, bootstyle=INFO).pack(side="left")
@@ -538,16 +617,32 @@ class App(ttk.Window):
         ttk.Button(mid, text="Delete selected from device", bootstyle=DANGER,
                    command=self._delete_selected).pack(side="left", padx=4)
 
-        self.flight_list = tk.Listbox(frame, height=10, bg=LIST_BG, fg=LIST_FG,
+        list_card = ttk.Frame(frame, style="Card.TFrame", padding=14)
+        list_card.pack(fill="both", expand=True, padx=8, pady=4)
+        ttk.Label(list_card, text="ON-BOARD FLIGHTS", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 8))
+        self.flight_list = tk.Listbox(list_card, height=10, bg=LIST_BG, fg=LIST_FG,
                                        selectbackground=LIST_SELECT_BG,
                                        selectforeground="white", relief="flat",
                                        borderwidth=0, highlightthickness=1,
                                        highlightbackground="#d1e7df",
                                        font=("", 11))
-        self.flight_list.pack(fill="both", expand=True, padx=8, pady=4)
+        self.flight_list.pack(fill="both", expand=True)
 
-        self.postflight_status = ttk.Label(frame, text="")
-        self.postflight_status.pack(fill="x", padx=8, pady=(0, 8))
+        self.postflight_status = ttk.Label(list_card, text="Connect to the board to see stored flights.",
+                                           style="Muted.TLabel")
+        self.postflight_status.pack(fill="x", pady=(8, 0))
+
+        monitor = ttk.Frame(frame, style="Card.TFrame", padding=14)
+        monitor.pack(fill="x", padx=8, pady=(0, 8))
+        monitor_head = ttk.Frame(monitor, style="Card.TFrame")
+        monitor_head.pack(fill="x")
+        ttk.Label(monitor_head, text="LIVE SERIAL MONITOR", style="CardTitle.TLabel").pack(side="left")
+        ttk.Label(monitor_head, text="Board output appears here when connected",
+                  style="Card.TLabel", foreground=MUTED).pack(side="left", padx=12)
+        self.serial_monitor = tk.Text(monitor, height=5, bg=CONSOLE_BG, fg=CONSOLE_FG,
+                                      relief="flat", borderwidth=0, highlightthickness=0,
+                                      font=FONT_MONO, padx=10, pady=8, state="disabled")
+        self.serial_monitor.pack(fill="x", pady=(8, 0))
 
         self._refresh_ports()
 
@@ -561,6 +656,28 @@ class App(ttk.Window):
                 if v.startswith(auto):
                     self.port_var.set(v)
                     break
+
+    def _start_serial_monitor(self):
+        if self._serial_monitor_after is None:
+            self._poll_serial_monitor()
+
+    def _poll_serial_monitor(self):
+        self._serial_monitor_after = None
+        if self.link and not self._serial_monitor_paused:
+            try:
+                lines = self.link.read_available_lines()
+                if lines:
+                    self.serial_monitor.configure(state="normal")
+                    for line in lines:
+                        self.serial_monitor.insert("end", line + "\n")
+                    self.serial_monitor.see("end")
+                    # Keep this view useful during long flights, not endless.
+                    if int(self.serial_monitor.index("end-1c").split(".")[0]) > 300:
+                        self.serial_monitor.delete("1.0", "100.0")
+                    self.serial_monitor.configure(state="disabled")
+            except Exception:
+                pass
+        self._serial_monitor_after = self.after(250, self._poll_serial_monitor)
 
     def _selected_port(self):
         val = self.port_var.get()
@@ -577,12 +694,13 @@ class App(ttk.Window):
 
         def done(result, err):
             if err:
-                self.conn_status.config(text=f"Connect failed: {err}", foreground="#e05260")
-                self.conn_dot.config(text="●  Not connected", foreground="#e05260")
+                self.conn_status.config(text=f"Connect failed: {err}", foreground=DANGER)
+                self.conn_dot.config(text="●  OFFLINE", foreground=DANGER)
             else:
                 self.link = result
-                self.conn_status.config(text=f"Connected: {port}", foreground="#5fd77f")
-                self.conn_dot.config(text=f"●  Connected", foreground="#5fd77f")
+                self.conn_status.config(text=f"Connected: {port}", foreground=ACCENT)
+                self._start_serial_monitor()
+                self.conn_dot.config(text="●  CONNECTED", foreground=ACCENT)
 
         run_in_background(self, task, done)
 
@@ -590,8 +708,8 @@ class App(ttk.Window):
         if self.link:
             self.link.close()
             self.link = None
-        self.conn_status.config(text="Not connected", foreground="#e05260")
-        self.conn_dot.config(text="●  Not connected", foreground="#e05260")
+        self.conn_status.config(text="Not connected", foreground=DANGER)
+        self.conn_dot.config(text="●  OFFLINE", foreground=DANGER)
 
     def _require_link(self):
         if not self.link:
@@ -604,9 +722,11 @@ class App(ttk.Window):
             return
 
         def task():
+            self._serial_monitor_paused = True
             return self.link.list_flights()
 
         def done(result, err):
+            self._serial_monitor_paused = False
             self.flight_list.delete(0, "end")
             if err:
                 self.postflight_status.config(text=f"Error: {err}")
@@ -636,6 +756,7 @@ class App(ttk.Window):
         self._start_progress(f"Downloading flight {num}...")
 
         def task():
+            self._serial_monitor_paused = True
             records = self.link.download_flight(num)
             config_h = os.path.join(self.repo_path, "include", "config.h") \
                 if self.repo_path else None
@@ -648,6 +769,7 @@ class App(ttk.Window):
             return folder
 
         def done(result, err):
+            self._serial_monitor_paused = False
             if err:
                 self.postflight_status.config(text=f"Download failed: {err}")
                 self._stop_progress("Download failed")
@@ -670,6 +792,7 @@ class App(ttk.Window):
         self._start_progress(f"Downloading {len(nums)} flight(s)...")
 
         def task():
+            self._serial_monitor_paused = True
             saved = []
             for num in nums:
                 records = self.link.download_flight(num)
@@ -684,6 +807,7 @@ class App(ttk.Window):
             return saved
 
         def done(result, err):
+            self._serial_monitor_paused = False
             if err:
                 self.postflight_status.config(text=f"Download-all failed partway: {err}")
                 self._stop_progress("Download failed")
@@ -706,9 +830,11 @@ class App(ttk.Window):
             return
 
         def task():
+            self._serial_monitor_paused = True
             return self.link.delete_flight(num)
 
         def done(result, err):
+            self._serial_monitor_paused = False
             if err:
                 self.postflight_status.config(text=f"Delete failed: {err}")
             else:

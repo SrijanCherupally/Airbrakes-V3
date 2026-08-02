@@ -18,7 +18,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.join(THIS_DIR, "app")
 sys.path.insert(0, APP_DIR)
 
-from main_window import App  # noqa: E402  (import after sys.path setup)
+from modern_window import App  # noqa: E402  (import after sys.path setup)
 
 if __name__ == "__main__":
     App().mainloop()
