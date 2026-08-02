@@ -1,0 +1,6 @@
+pyserial>=3.5
+customtkinter>=5.2
+pandas>=2.0
+matplotlib>=3.7
+platformio>=6.0
+pyinstaller>=6.0
