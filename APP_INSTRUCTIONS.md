@@ -14,9 +14,15 @@ pip install -r app/requirements.txt
 python app.py
 ```
 
-On Windows, double-click `app.bat` instead. The app needs `pio` for build and
-flash operations; it is installed by the requirements file or can be provided
-by an existing PlatformIO installation.
+On Windows, double-click `app.bat`. On macOS, make `app.command` executable
+once, then double-click it in Finder:
+
+```bash
+chmod +x app.command
+```
+
+The app needs `pio` for build and flash operations; it is installed by the
+requirements file or can be provided by an existing PlatformIO installation.
 
 ## Main workflows
 
