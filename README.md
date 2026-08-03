@@ -46,8 +46,10 @@ pip install -r app/requirements.txt
 python app.py
 ```
 
-On Windows, `app.bat` is the double-click launcher. For the lower-level serial
-workflow, use `python flight_data_manager.py`; see [`DATA.md`](DATA.md).
+On Windows, `app.bat` is the double-click launcher. On macOS, run
+`chmod +x app.command` once, then double-click `app.command` in Finder. For the
+lower-level serial workflow, use `python flight_data_manager.py`; see
+[`DATA.md`](DATA.md).
 
 ## Firmware overview
 
@@ -111,7 +113,8 @@ registry CAN package to `platformio.ini`; PlatformIO should use the local copy.
 
 ## Ground station
 
-- `app.py` launches the desktop GUI; `app.bat` launches it on Windows.
+- `app.py` launches the desktop GUI; `app.bat` and `app.command` are the
+  Windows and macOS double-click launchers.
 - `app/` contains the GUI, serial link, configuration editor, coast-table
   tools, plotting, and firmware helpers.
 - `flight_data_manager.py` is the command-line downloader and CSV converter.
