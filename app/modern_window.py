@@ -234,7 +234,7 @@ class App(ctk.CTk):
         self.label(f,"Stored flights",TEXT,17,"bold").grid(row=0,column=0,sticky="w",padx=20,pady=(19,2)); self.flight_status=self.label(f,"Connect to view flights",MUTED,11); self.flight_status.grid(row=1,column=0,sticky="w",padx=20)
         self.flight_list=ctk.CTkFrame(f,fg_color="transparent",bg_color=SURFACE); self.flight_list.grid(row=2,column=0,sticky="ew",padx=14,pady=10)
         r=ctk.CTkFrame(f,fg_color="transparent",bg_color=SURFACE); r.grid(row=3,column=0,sticky="w",padx=20,pady=(0,19)); self.button(r,"List flights",self._list_flights).pack(side="left",padx=(0,8)); self.button(r,"Download selected",self._download).pack(side="left",padx=(0,8)); self.button(r,"Download all",self._download_all,"primary").pack(side="left")
-        t=self.card();t.grid(row=6,column=0,sticky="ew",padx=10,pady=8);self.label(t,"Ground test",TEXT,17,"bold").pack(anchor="w",padx=20,pady=(17,2));self.label(t,"Arms an opt-in shake-triggered 15 s sensor log and a slow close → open → close airbrake sweep. Keep clear of the mechanism.",MUTED,10,wraplength=800,justify="left").pack(anchor="w",padx=20);tr=ctk.CTkFrame(t,fg_color="transparent",bg_color=SURFACE);tr.pack(anchor="w",padx=20,pady=(10,4));self.button(tr,"Arm ground test",self._ground_test_start,"primary").pack(side="left",padx=(0,8));self.button(tr,"Abort / close brakes",self._ground_test_abort).pack(side="left",padx=(0,8));self.button(tr,"Check status",self._ground_test_status).pack(side="left");self.ground_test_status=self.label(t,"Connect to arm a test.",MUTED,10);self.ground_test_status.pack(anchor="w",padx=20,pady=(0,17))
+        t=self.card();t.grid(row=6,column=0,sticky="ew",padx=10,pady=8);self.label(t,"Ground test",TEXT,17,"bold").pack(anchor="w",padx=20,pady=(17,2));self.label(t,"Arms an opt-in shake-triggered 15 s sensor log and a slow close → open → close airbrake sweep. Keep clear of the mechanism.",MUTED,10,wraplength=800,justify="left").pack(anchor="w",padx=20);tr=ctk.CTkFrame(t,fg_color="transparent",bg_color=SURFACE);tr.pack(anchor="w",padx=20,pady=(10,4));self.button(tr,"Arm ground test",self._ground_test_start,"primary").pack(side="left",padx=(0,8));self.button(tr,"Abort / close brakes",self._ground_test_abort).pack(side="left",padx=(0,8));self.button(tr,"Check status",self._ground_test_status).pack(side="left");self.button(tr,"Check DPS368",self._baro_status,"quiet").pack(side="left",padx=(8,0));self.ground_test_status=self.label(t,"Connect to arm a test.",MUTED,10);self.ground_test_status.pack(anchor="w",padx=20,pady=(0,17))
         activity=self.card();activity.grid(row=7,column=0,sticky="ew",padx=10,pady=8)
         self.label(activity,"Operation status",TEXT,17,"bold").pack(anchor="w",padx=20,pady=(17,0))
         self._activity(activity,1)
@@ -353,6 +353,15 @@ class App(ctk.CTk):
     def _ground_test_status(self):
         if not self.link:return messagebox.showwarning("Not connected","Connect to the board first.")
         self._ground_test_command(self.link.ground_test_status,"Checking ground-test status")
+    def _baro_status(self):
+        if not self.link:return messagebox.showwarning("Not connected","Connect to the board first.")
+        self._monitor_paused=True;self._activity("Checking DPS368",True)
+        def done(result,error):
+            self._monitor_paused=False
+            if error:
+                self._activity("DPS368 check failed",False);self._log("DPS368 error: "+str(error));return
+            self._append_monitor(result,"state");self._activity("DPS368 status received",False);self._log(result)
+        self._async(self.link.baro_status,done)
     def _ground_test_command(self,command,label):
         self._monitor_paused=True;self.ground_test_status.configure(text=label+" …",text_color=AMBER);self._activity(label,True)
         def done(result,error):

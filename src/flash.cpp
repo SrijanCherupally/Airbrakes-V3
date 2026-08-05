@@ -353,6 +353,8 @@ void handleFlashCommands() {
         }
 
         Serial.println(" used");
+      } else if (commandBuffer == "BARO STATUS") {
+        baro.printDiagnostics();
       } else if (commandBuffer == "GROUND_TEST START") {
         if (startGroundTest()) {
           Serial.println("GROUND_TEST:ARMED: Shake the rocket to start recording");

@@ -122,6 +122,17 @@ class FlightComputerLink:
         raise FlightComputerError("No response to INFO — check port/baud and that "
                                    "nothing else (e.g. pio device monitor) has the port open.")
 
+    def baro_status(self):
+        """Request an on-demand DPS368 diagnostic without rebooting the board."""
+        self._send("BARO STATUS")
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if self.ser.in_waiting:
+                line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+                if line.startswith("DPS368_DIAG:"):
+                    return line
+        raise FlightComputerError("No response to BARO STATUS — check the serial connection.")
+
     def list_flights(self):
         """Returns [{'file': 'flight_0.bin', 'num': 0, 'size': '12.30 KB', 'active': bool}, ...]"""
         self._send("LIST")
