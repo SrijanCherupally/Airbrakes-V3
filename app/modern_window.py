@@ -73,17 +73,45 @@ class App(ctk.CTk):
         self.sidebar=ctk.CTkFrame(self,width=244,fg_color=SIDEBAR,bg_color=BG,corner_radius=0); self.sidebar.grid(row=0,column=0,sticky="nsew"); self.sidebar.grid_propagate(False)
         b=ctk.CTkFrame(self.sidebar,fg_color="transparent",bg_color=SIDEBAR); b.pack(fill="x",padx=24,pady=(30,34)); m=ctk.CTkFrame(b,width=38,height=38,fg_color=TEAL_DARK,bg_color=SIDEBAR,corner_radius=12);m.pack(side="left",padx=(0,12));m.pack_propagate(False);self.label(m,"A",TEAL,20,"bold").place(relx=.5,rely=.48,anchor="center"); self.label(b,"AIRBRAKES",TEAL,18,"bold").pack(anchor="w");self.label(b,"V3  /  GROUND STATION",SUBTLE,9,"bold").pack(anchor="w")
         self.nav={}
-        for n,g in (("Pre-flight","◈"),("Post-flight","↕"),("History","◷")):
+        for n,g in (("Pre-flight","◈"),("Board","⌁"),("Ground test","⚙"),("History","◷")):
             x=ctk.CTkButton(self.sidebar,text=f"  {g}   {n}",anchor="w",height=46,corner_radius=13,fg_color="transparent",bg_color=SIDEBAR,hover_color=FIELD,text_color=MUTED,font=ctk.CTkFont(family=FONT,size=13,weight="bold"),command=lambda z=n:self._show_page(z));x.pack(fill="x",padx=14,pady=3);self.nav[n]=x
         ctk.CTkFrame(self.sidebar,height=1,fg_color=BORDER,bg_color=SIDEBAR).pack(fill="x",padx=24,pady=30);self.label(self.sidebar,"BOARD LINK",SUBTLE,9,"bold").pack(anchor="w",padx=26)
-        q=ctk.CTkFrame(self.sidebar,fg_color=SURFACE,bg_color=SIDEBAR,corner_radius=12);q.pack(fill="x",padx=20,pady=(9,8));self.connection=self.label(q,"●  OFFLINE",RED,11,"bold");self.connection.pack(anchor="w",padx=13,pady=10);self.side_hint=self.label(self.sidebar,"Connect a board from\nthe Post-flight page.",MUTED,11,justify="left");self.side_hint.pack(anchor="w",padx=26)
+        q=ctk.CTkFrame(self.sidebar,fg_color=SURFACE,bg_color=SIDEBAR,corner_radius=12);q.pack(fill="x",padx=20,pady=(9,8));self.connection=self.label(q,"●  OFFLINE",RED,11,"bold");self.connection.pack(anchor="w",padx=13,pady=10);self.side_hint=self.label(self.sidebar,"Connect from the Board\npage to get started.",MUTED,11,justify="left");self.side_hint.pack(anchor="w",padx=26)
     def _show_page(self,n):
         self._page_generation+=1
         self.workspace.grid_remove()
         for x in self.workspace.winfo_children():x.destroy()
         for k,v in self.nav.items():v.configure(fg_color=TEAL_DARK if k==n else "transparent",text_color=TEXT if k==n else MUTED)
-        {"Pre-flight":self._preflight,"Post-flight":self._postflight,"History":self._history}[n]()
+        {"Pre-flight":self._preflight,"Board":self._board,"Ground test":self._ground_test_page,"History":self._history}[n]()
         self.update_idletasks();self.workspace.grid()
+
+    def _board(self):
+        """Dedicated home for the connection and onboard file controls."""
+        self._postflight()
+
+    def _ground_test_page(self):
+        """Dedicated ground-test page; connection remains available globally."""
+        self._postflight()
+        if hasattr(self, "flight_card"):
+            self.flight_card.grid_remove()
+            self._log("Ground-test controls are below the board connection.")
+
+    def _history_row(self, parent, entry, row, color, label):
+        box = ctk.CTkFrame(parent, fg_color=FIELD, bg_color=SURFACE, corner_radius=12)
+        box.grid(row=row, column=0, columnspan=2, sticky="ew", padx=20, pady=4)
+        self.label(box, f"{label} {entry['flight_num']:04d}", color, 11, "bold").pack(side="left", padx=14, pady=12)
+        self.label(box, f"{entry.get('downloaded_at', '?')}  ·  {entry.get('duration_s', 0):.1f}s", MUTED, 10).pack(side="left", padx=8)
+        self.button(box, "Delete", lambda e=entry: self._delete_local(e), "danger", height=28, width=76).pack(side="right", padx=10)
+
+    def _delete_local(self, entry):
+        if messagebox.askyesno("Delete local data", f"Delete {entry.get('folder')} from this computer?"):
+            self.store.delete_local(entry["folder"])
+            self._show_page("History")
+
+    def _delete_all_local(self):
+        if messagebox.askyesno("Delete all local data", "Delete every saved flight and ground test from this computer? This does not affect the board."):
+            self.store.delete_all_local()
+            self._show_page("History")
     def title_block(self,e,t,s):self.label(self.workspace,e.upper(),TEAL,10,"bold").grid(row=0,column=0,sticky="w",padx=10);self.label(self.workspace,t,TEXT,30,"bold").grid(row=1,column=0,sticky="w",padx=10,pady=(4,0));self.label(self.workspace,s,MUTED,12).grid(row=2,column=0,sticky="w",padx=10,pady=(4,24))
     def _activity(self,p,row):
         a=ctk.CTkFrame(p,fg_color=SURFACE2,bg_color=SURFACE,border_color=BORDER,border_width=1,corner_radius=18);a.grid(row=row,column=0,columnspan=3,sticky="ew",padx=20,pady=(0,20));a.grid_columnconfigure(0,weight=1);h=ctk.CTkFrame(a,fg_color="transparent",bg_color=SURFACE2);h.grid(row=0,column=0,sticky="ew",padx=18,pady=(15,0));self.label(h,"LIVE ACTIVITY",TEAL,9,"bold").pack(side="left");self.activity=self.label(h,"Standing by",TEXT,12,"bold");self.activity.pack(side="right");self.detail=self.label(a,"Your next operation will appear here",MUTED,10);self.detail.grid(row=1,column=0,sticky="w",padx=18,pady=(5,0));self.progress=ctk.CTkProgressBar(a,height=9,corner_radius=5,fg_color=FIELD,progress_color=TEAL);self.progress.grid(row=2,column=0,sticky="ew",padx=18,pady=12);self.progress.set(0);f=ctk.CTkFrame(a,fg_color="transparent",bg_color=SURFACE2);f.grid(row=3,column=0,sticky="ew",padx=18,pady=(0,13));self.percent=self.label(f,"0%",SUBTLE,10,"bold");self.percent.pack(side="left");self.clock=self.label(f,"",SUBTLE,10);self.clock.pack(side="right");self.details=self.button(f,"▸  Details",self._toggle_log,"quiet",height=27,width=100);self.details.pack(side="right",padx=(0,12));self.clear_details=self.button(f,"Clear",self._clear_log,"quiet",height=27,width=65);self.clear_details.pack(side="right",padx=(0,8));self.log=ctk.CTkTextbox(a,height=125,corner_radius=13,bg_color=SURFACE2,fg_color=CONSOLE,border_color=BORDER,border_width=1,text_color="#bcebdc",font=ctk.CTkFont(family=MONO,size=10),wrap="none");self.log.grid(row=4,column=0,sticky="ew",padx=18,pady=(0,14));self.log.grid_remove();self.log.configure(state="disabled")
@@ -115,7 +143,6 @@ class App(ctk.CTk):
         p=filedialog.askdirectory(title="Select Airbrakes V3 repository")
         if p:self.repo_path=p;self.cfg["repo_path"]=p;save_config(self.cfg);self.repo_label.configure(text=p)
     def _run_coast(self):
-        if not self.repo_path:return messagebox.showwarning("Repository needed","Choose the repository first.")
         try:v=[float(x.get()) for x in (self.mass,self.temp,self.humidity,self.pressure)]
         except ValueError:return messagebox.showerror("Invalid values","All launch-condition fields must be numbers.")
         self._activity("Generating coast table",True);self._show_global_status("Generating coast table","Validating launch conditions and preparing simulation …",True);self._log("Preparing coast table inputs …")
@@ -207,13 +234,14 @@ class App(ctk.CTk):
         self.label(f,"Stored flights",TEXT,17,"bold").grid(row=0,column=0,sticky="w",padx=20,pady=(19,2)); self.flight_status=self.label(f,"Connect to view flights",MUTED,11); self.flight_status.grid(row=1,column=0,sticky="w",padx=20)
         self.flight_list=ctk.CTkFrame(f,fg_color="transparent",bg_color=SURFACE); self.flight_list.grid(row=2,column=0,sticky="ew",padx=14,pady=10)
         r=ctk.CTkFrame(f,fg_color="transparent",bg_color=SURFACE); r.grid(row=3,column=0,sticky="w",padx=20,pady=(0,19)); self.button(r,"List flights",self._list_flights).pack(side="left",padx=(0,8)); self.button(r,"Download selected",self._download).pack(side="left",padx=(0,8)); self.button(r,"Download all",self._download_all,"primary").pack(side="left")
-        activity=self.card();activity.grid(row=6,column=0,sticky="ew",padx=10,pady=8)
+        t=self.card();t.grid(row=6,column=0,sticky="ew",padx=10,pady=8);self.label(t,"Ground test",TEXT,17,"bold").pack(anchor="w",padx=20,pady=(17,2));self.label(t,"Arms an opt-in shake-triggered 15 s sensor log and a slow close → open → close airbrake sweep. Keep clear of the mechanism.",MUTED,10,wraplength=800,justify="left").pack(anchor="w",padx=20);tr=ctk.CTkFrame(t,fg_color="transparent",bg_color=SURFACE);tr.pack(anchor="w",padx=20,pady=(10,4));self.button(tr,"Arm ground test",self._ground_test_start,"primary").pack(side="left",padx=(0,8));self.button(tr,"Abort / close brakes",self._ground_test_abort).pack(side="left",padx=(0,8));self.button(tr,"Check status",self._ground_test_status).pack(side="left");self.ground_test_status=self.label(t,"Connect to arm a test.",MUTED,10);self.ground_test_status.pack(anchor="w",padx=20,pady=(0,17))
+        activity=self.card();activity.grid(row=7,column=0,sticky="ew",padx=10,pady=8)
         self.label(activity,"Operation status",TEXT,17,"bold").pack(anchor="w",padx=20,pady=(17,0))
         self._activity(activity,1)
         self._monitor()
         if self.link and self._monitor_job is None:self._monitor_job=self.after(100,self._poll_monitor)
     def _monitor(self):
-        m=self.card();m.grid(row=7,column=0,sticky="ew",padx=10,pady=8);m.grid_columnconfigure(0,weight=1);h=ctk.CTkFrame(m,fg_color="transparent",bg_color=SURFACE);h.grid(row=0,column=0,sticky="ew",padx=20,pady=(17,0));self.label(h,"Live serial monitor",TEXT,17,"bold").pack(side="left");self.monitor_status=self.label(h,"●  Waiting for board",MUTED,10,"bold");self.monitor_status.pack(side="right");r=ctk.CTkFrame(m,fg_color="transparent",bg_color=SURFACE);r.grid(row=1,column=0,sticky="ew",padx=20,pady=(8,10));self.monitor_lines=self.label(r,"0 lines",SUBTLE,10);self.monitor_lines.pack(side="left");self.button(r,"Clear",self._clear_monitor,"quiet",height=27,width=65).pack(side="right");self.auto_button=self.button(r,"Autoscroll  ON",self._toggle_autoscroll,"quiet",height=27,width=115);self.auto_button.pack(side="right",padx=(8,0));self.monitor=ctk.CTkTextbox(m,height=165,corner_radius=13,bg_color=SURFACE,fg_color=CONSOLE,border_color=BORDER,border_width=1,text_color="#c7eee1",font=ctk.CTkFont(family=MONO,size=10),wrap="none");self.monitor.grid(row=2,column=0,sticky="ew",padx=20,pady=(0,19))
+        m=self.card();m.grid(row=8,column=0,sticky="ew",padx=10,pady=8);m.grid_columnconfigure(0,weight=1);h=ctk.CTkFrame(m,fg_color="transparent",bg_color=SURFACE);h.grid(row=0,column=0,sticky="ew",padx=20,pady=(17,0));self.label(h,"Live serial monitor",TEXT,17,"bold").pack(side="left");self.monitor_status=self.label(h,"●  Waiting for board",MUTED,10,"bold");self.monitor_status.pack(side="right");r=ctk.CTkFrame(m,fg_color="transparent",bg_color=SURFACE);r.grid(row=1,column=0,sticky="ew",padx=20,pady=(8,10));self.monitor_lines=self.label(r,"0 lines",SUBTLE,10);self.monitor_lines.pack(side="left");self.button(r,"Clear",self._clear_monitor,"quiet",height=27,width=65).pack(side="right");self.auto_button=self.button(r,"Autoscroll  ON",self._toggle_autoscroll,"quiet",height=27,width=115);self.auto_button.pack(side="right",padx=(8,0));self.monitor=ctk.CTkTextbox(m,height=165,corner_radius=13,bg_color=SURFACE,fg_color=CONSOLE,border_color=BORDER,border_width=1,text_color="#c7eee1",font=ctk.CTkFont(family=MONO,size=10),wrap="none");self.monitor.grid(row=2,column=0,sticky="ew",padx=20,pady=(0,19))
         for tag,color in (("normal","#b9d1ce"),("warn",AMBER),("error",RED),("state",BLUE)):self.monitor.tag_config(tag,foreground=color)
     def _toggle_autoscroll(self):self._autoscroll=not self._autoscroll;self.auto_button.configure(text="Autoscroll  "+("ON" if self._autoscroll else "OFF"))
     def _clear_monitor(self):self.monitor.delete("1.0","end");self.monitor_lines.configure(text="0 lines")
@@ -315,6 +343,25 @@ class App(ctk.CTk):
     def _append_monitor(self,text,tag="normal"):
         if not hasattr(self,"monitor") or not self.monitor.winfo_exists():return
         self.monitor.insert("end",str(text)+"\n",tag)
+    def _ground_test_start(self):
+        if not self.link:return messagebox.showwarning("Not connected","Connect to the board first.")
+        if not messagebox.askyesno("Arm ground test","Keep clear of the airbrakes. After you shake the rocket, it records for 15 seconds and moves the brakes close → open → close. Continue?"):return
+        self._ground_test_command(self.link.ground_test_start,"Arming ground test")
+    def _ground_test_abort(self):
+        if not self.link:return messagebox.showwarning("Not connected","Connect to the board first.")
+        self._ground_test_command(self.link.ground_test_abort,"Aborting ground test")
+    def _ground_test_status(self):
+        if not self.link:return messagebox.showwarning("Not connected","Connect to the board first.")
+        self._ground_test_command(self.link.ground_test_status,"Checking ground-test status")
+    def _ground_test_command(self,command,label):
+        self._monitor_paused=True;self.ground_test_status.configure(text=label+" …",text_color=AMBER);self._activity(label,True)
+        def done(result,error):
+            self._monitor_paused=False
+            if error:
+                self.ground_test_status.configure(text=str(error),text_color=RED);self._activity("Ground test command failed",False);self._log("Ground test error: "+str(error))
+            else:
+                self.ground_test_status.configure(text=result,text_color=TEAL);self._activity("Ground test updated",False);self._log(result)
+        self._async(command,done)
     def _list_flights(self):
         if not self.link:return messagebox.showwarning("Not connected","Connect to the board first.")
         self._monitor_paused=True;self._activity("Reading flights from board",True);self._log("Sending LIST request …");self.flight_status.configure(text="Reading onboard flight files …",text_color=AMBER);self._async(self.link.list_flights,self._flights_done)
@@ -342,7 +389,8 @@ class App(ctk.CTk):
             for n in numbers:
                 records=self.link.download_flight(n)
                 config_h=os.path.join(self.repo_path,"include","config.h") if self.repo_path else None
-                saved.append(self.store.save_flight(n,records,config_h_path=config_h))
+                category = "ground_test" if any(x.get("state_name", "").startswith("GROUND_TEST") for x in records) else "flight"
+                saved.append(self.store.save_flight(n,records,config_h_path=config_h,category=category))
                 if delete and not any(f["num"]==n and f["active"] for f in self._flights):self.link.delete_flight(n)
             return saved
         self._async(task,self._download_done)
@@ -357,10 +405,19 @@ class App(ctk.CTk):
         else:
             self.flight_status.configure(text=f"Saved {len(r)} flight(s) to {self.data_dir}",text_color=TEAL);self._activity("Download complete",False)
     def _history(self):
-        self.title_block("Analysis","Flight history","Saved sessions, ready to review whenever you need them.");c=self.card();c.grid(row=3,column=0,sticky="ew",padx=10,pady=8);c.grid_columnconfigure(0,weight=1);self.label(c,"Saved sessions",TEXT,17,"bold").grid(row=0,column=0,sticky="w",padx=20,pady=(19,5));entries=self.store.list_flights()
+        self.title_block("Analysis","Flight history","All saved sessions in one place. Select a session to inspect it, or remove local copies here.");c=self.card();c.grid(row=3,column=0,sticky="ew",padx=10,pady=8);c.grid_columnconfigure(0,weight=1);self.label(c,"Saved sessions",TEXT,17,"bold").grid(row=0,column=0,sticky="w",padx=20,pady=(19,5));self.button(c,"Delete all local data",self._delete_all_local,"danger",height=32).grid(row=0,column=1,padx=20,pady=(15,5));entries=self.store.list_by_category("flight")
+        tests=self.store.list_by_category("ground_test")
         if entries:
             for i,e in enumerate(entries,1):
-                row=ctk.CTkFrame(c,fg_color=FIELD,bg_color=SURFACE,corner_radius=12);row.grid(row=i,column=0,sticky="ew",padx=20,pady=4);self.label(row,f"FLIGHT {e['flight_num']:04d}",TEAL,11,"bold").pack(side="left",padx=14,pady=12);self.label(row,f"{e['downloaded_at']}   ·   {e.get('duration_s',0):.1f}s",MUTED,10).pack(side="right",padx=14)
+                self._history_row(c,e,i,TEAL,"FLIGHT")
+            if tests:
+                self.label(c,"Ground tests",TEXT,17,"bold").grid(row=len(entries)+1,column=0,sticky="w",padx=20,pady=(22,5))
+                for j,e in enumerate(tests, len(entries)+2):
+                    self._history_row(c,e,j,AMBER,"GROUND TEST")
+        elif tests:
+            self.label(c,"Ground tests",TEXT,17,"bold").grid(row=0,column=0,sticky="w",padx=20,pady=(19,5))
+            for j,e in enumerate(tests, 1):
+                self._history_row(c,e,j,AMBER,"GROUND TEST")
         else:
             x=ctk.CTkFrame(c,fg_color="transparent",bg_color=SURFACE);x.grid(row=1,column=0,sticky="ew",pady=70);self.label(x,"◌",TEAL,34).pack();self.label(x,"No saved flights yet",TEXT,15,"bold").pack(pady=(7,3));self.label(x,"Download a flight from Post-flight to see it here.",MUTED,11).pack()
 

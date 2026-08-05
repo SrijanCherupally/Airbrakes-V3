@@ -12,6 +12,7 @@ public:
 
     // Re-initialize state and covariance (call at launch)
     void reset();
+    void setBias(float value);
 
     // IMU update
     void predict();

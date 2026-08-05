@@ -25,6 +25,15 @@
 #define CAN_BAUDRATE 250000
 #define ODRV_NODE_ID 0
 
+// Battery monitor: the divider is R1 from battery+ to GPIO27 and R2 from
+// GPIO27 to ground. ADC1 on RP2350 is GPIO27. Keep the resistor values here so
+// the logged voltage conversion is explicit and easy to calibrate.
+#define BATTERY_VOLTAGE_PIN 27
+#define BATTERY_ADC_MAX 4095.0f
+#define BATTERY_ADC_REFERENCE_V 3.3f
+#define BATTERY_DIVIDER_R1_OHM 17800.0f
+#define BATTERY_DIVIDER_R2_OHM 10000.0f
+
 // Global hardware instances (defined in hardware.cpp)
 extern BARO baro;
 extern IMU imu;
@@ -36,9 +45,11 @@ extern float motorvel;
 extern float motorpos;
 extern float motorcurrent;
 extern float motor_cmd_pos;
+extern float batteryVoltage;
 extern uint32_t axisError;
 
 void setupHardware();
+void updateBatteryVoltage();
 void ledWrite(float r, float g, float b);
 
 // ODrive helpers
@@ -46,5 +57,7 @@ void EnableOdrv();
 void odrvPosition(float pos);
 void serviceOdrive();
 bool odriveHeartbeatFresh();
+bool odriveReady();
+bool odriveCurrentLimitExceeded();
 
 #endif  // HARDWARE_H

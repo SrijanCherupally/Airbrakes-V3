@@ -9,9 +9,22 @@ bool BARO::begin() {
 
 bool BARO::update() {
   if (!initialized) return false;
-  if (!waitForFlags(MEAS_PRS_RDY | MEAS_TMP_RDY, 100)) return false;
-  rawT = readTempRaw();
-  rawP = readPressureRaw();
+  // Pressure and temperature ready bits are independent. Waiting for both in
+  // the same status read can miss a sample on the DPS368, leaving altitude at
+  // its initialization value forever. Pressure is the sample validity flag;
+  // retain the latest temperature when its own bit is ready.
+  uint32_t start = millis();
+  bool pressureReady = false;
+  while ((uint32_t)(millis() - start) < 100) {
+    uint8_t flags = dpsRead8(REG_MEAS_CFG);
+    if (flags & MEAS_TMP_RDY) rawT = readTempRaw();
+    if (flags & MEAS_PRS_RDY) {
+      rawP = readPressureRaw();
+      pressureReady = true;
+      break;
+    }
+  }
+  if (!pressureReady) return false;
   tempC = calcTemperatureC(rawT);
   pressurePa = calcPressurePa(rawP, rawT);
   altitude_cm =
@@ -53,9 +66,9 @@ bool BARO::init() {
   dpsWrite(REG_MEAS_CFG, 0x07);
 
   // Set baseline
-  if (!waitForFlags(MEAS_PRS_RDY | MEAS_TMP_RDY, 100)) return false;
-  rawT = readTempRaw();
+  if (!waitForFlags(MEAS_PRS_RDY, 100)) return false;
   rawP = readPressureRaw();
+  if (waitForFlags(MEAS_TMP_RDY, 100)) rawT = readTempRaw();
   baselinePressure = calcPressurePa(rawP, rawT);
   return isfinite(baselinePressure) && baselinePressure > 1000.0f;
 }

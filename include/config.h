@@ -12,8 +12,19 @@
 #define ALT_LANDED 2.0f          // m, alt below this to consider landed
 #define VEL_LANDED 1.0f          // m/s, abs(vel) below this to consider landed
 #define TARGET_ALTITUDE 243.84f   // m, target apogee altitude
-#define MOTOR_MAX 42.0f          // Motor position for fully open
+#define MOTOR_MAX -42.0f         // Motor position for fully open
 #define MOTOR_MIN 0.0f           // Motor position for fully closed
+
+// Ground-test safety limits.  The test sweep is deliberately slow and stops
+// immediately if the ODrive reports more than this torque-producing current.
+#define GROUND_TEST_SHAKE_ACCEL 14.0f       // m/s^2, accel magnitude including gravity
+#define GROUND_TEST_DURATION_MS 15000UL     // recording time after the shake
+#define GROUND_TEST_SWEEP_STEP 2.0f         // position units per command
+#define GROUND_TEST_SWEEP_PERIOD_MS 100UL   // 20 position units/s maximum
+#define GROUND_TEST_CURRENT_LIMIT_A 3.0f
+#define GROUND_TEST_VELOCITY_LIMIT 50.0f  // turns/s while executing the test
+#define GROUND_TEST_POSITION_TOLERANCE 0.5f
+#define GROUND_TEST_OPEN_TIMEOUT_MS 5000UL
 
 // Cd controller tuning (closed-loop Cd tracking)
 #define CD_CTRL_KP 5.0f             // position units per Cd error

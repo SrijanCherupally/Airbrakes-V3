@@ -15,6 +15,8 @@ static Kalman filter(1.0f / (float)LOOPRATE);
 
 static float gCd = BASE_CD;
 static float gRawBaro = 0.0f;
+static float gRawAccel = 0.0f;
+static float gCalibratedBias = 0.0f;
 
 bool biasActive = true;
 
@@ -36,14 +38,17 @@ void filterReset() {
   baro.update();
   initOrientation();
   filter.reset();
+  filter.setBias(gCalibratedBias);
   gCd = BASE_CD;
-  gRawBaro = baro.getAltitudeM();
+  if (baro.isConnected()) gRawBaro = baro.getAltitudeM();
+  gRawAccel = 0.0f;
 }
 
 float biasUpdate() {
   unsigned long start = micros();
 
   imu.update();
+  gRawAccel = imu.getAccZ() - G;
 
   float a[3] = {imu.getAccX(), imu.getAccY(), imu.getAccZ()};
   float g[3] = {imu.getGyrX(), imu.getGyrY(), imu.getGyrZ()};
@@ -59,6 +64,12 @@ float biasUpdate() {
   // from a good reference.
   if (stationary) {
     initOrientation();
+    float worldAcceleration[3];
+    getWorldAcceleration(worldAcceleration);
+    // At rest, world-frame vertical specific force should be zero. Average
+    // it slowly so the estimate is not reset to zero when the filter starts.
+    gCalibratedBias = 0.995f * gCalibratedBias + 0.005f * worldAcceleration[2];
+    filter.setBias(gCalibratedBias);
   }
 
   // Keep the barometer reference fresh.
@@ -76,6 +87,13 @@ void filterUpdate() {
   // Read IMU and propagate attitude
   imu.update();
   updateOrientation();
+
+  // Keep raw sensor telemetry independent of the Kalman/barometer update.
+  // Previously the logger used estAccel(), which is already bias-corrected,
+  // and the raw field therefore did not contain the raw accelerometer data.
+  float worldAcceleration[3];
+  getWorldAcceleration(worldAcceleration);
+  gRawAccel = worldAcceleration[2];
 
   // Kalman prediction from world-frame vertical acceleration
   filter.predict();
@@ -116,11 +134,17 @@ float estVelocity() {
 float estAccel() {
   return filter.getCorrectedAcceleration();
 }
+float estRawAccel() {
+  return gRawAccel;
+}
 float estBias() {
-  return filter.getBias();
+  // The calibrated value is the actual pad calibration result.  Returning
+  // the filter state here hid calibration because the filter can be reset
+  // before it has received a barometer correction.
+  return gCalibratedBias;
 }
 float estRawBaro() {
-  return gRawBaro;
+  return baro.isConnected() ? baro.getAltitudeM() : gRawBaro;
 }
 float estCd() {
   return gCd;

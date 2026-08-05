@@ -1,96 +1,83 @@
-"""
-Local flight-data database.
-
-Every downloaded flight gets its own folder under the app's data directory:
-
-    flight_data/
-      flight_0000_2026-07-30_142310/
-        data.csv
-        meta.json
-        config_snapshot.h      (copy of config.h at download time, if available)
-      flight_0001_2026-08-01_091044/
-        ...
-      index.json
-
-index.json is a flat list so the History tab can populate instantly without
-re-reading every CSV.
-"""
-
-import csv
-import json
-import os
-import shutil
+﻿"""Persistent local storage for downloaded flights and ground tests."""
+import csv, hashlib, json, os, shutil
 from datetime import datetime
-
 from serial_link import FIELD_NAMES
-
 
 class DataStore:
     def __init__(self, root_dir):
         self.root = root_dir
         os.makedirs(self.root, exist_ok=True)
         self.index_path = os.path.join(self.root, "index.json")
-        if not os.path.exists(self.index_path):
-            self._write_index([])
+        if not os.path.exists(self.index_path): self._write_index([])
+        # Clean up copies created by older versions before the history view
+        # reads them. The newest copy of each identical CSV is retained.
+        self.remove_duplicates()
 
     def _read_index(self):
-        with open(self.index_path) as f:
-            return json.load(f)
+        try:
+            with open(self.index_path, encoding="utf-8") as f: value = json.load(f)
+            return value if isinstance(value, list) else []
+        except (OSError, ValueError): return []
 
     def _write_index(self, data):
-        with open(self.index_path, "w") as f:
-            json.dump(data, f, indent=2)
+        with open(self.index_path, "w", encoding="utf-8") as f: json.dump(data, f, indent=2)
 
-    def save_flight(self, flight_num, records, config_h_path=None, notes=""):
-        """Writes a new flight folder from a list of record dicts (see serial_link)."""
-        ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        folder_name = f"flight_{flight_num:04d}_{ts}"
-        folder = os.path.join(self.root, folder_name)
-        os.makedirs(folder, exist_ok=True)
+    @staticmethod
+    def _records_fingerprint(records):
+        payload = json.dumps(records, sort_keys=True, separators=(",", ":"), default=str).encode()
+        return hashlib.sha256(payload).hexdigest()
 
+    def save_flight(self, flight_num, records, config_h_path=None, notes="", category=None):
+        fingerprint = self._records_fingerprint(records)
+        for entry in self._read_index():
+            if entry.get("fingerprint") == fingerprint:
+                folder = os.path.join(self.root, entry.get("folder", ""))
+                if os.path.isdir(folder): return folder
+        category = category or ("ground_test" if any(r.get("state_name", "").startswith("GROUND_TEST") for r in records) else "flight")
+        folder_name = f"{category}_{flight_num:04d}_{datetime.now().strftime('%Y-%m-%d_%H%M%S_%f')}"
+        folder = os.path.join(self.root, folder_name); os.makedirs(folder, exist_ok=False)
         csv_path = os.path.join(folder, "data.csv")
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            header = FIELD_NAMES + ["state_name"]  # keeps numeric `state` AND readable name
-            writer.writerow(header)
-            for r in records:
-                row = [r.get(k) for k in FIELD_NAMES]
-                row.append(r.get("state_name"))
-                writer.writerow(row)
-
-        config_snapshot = None
-        if config_h_path and os.path.exists(config_h_path):
-            config_snapshot = os.path.join(folder, "config_snapshot.h")
-            shutil.copyfile(config_h_path, config_snapshot)
-
-        meta = {
-            "flight_num": flight_num,
-            "downloaded_at": ts,
-            "num_records": len(records),
-            "duration_s": (records[-1]["time_ms"] / 1000.0) if records else 0,
-            "max_altitude_m": max((r["altitude_m"] for r in records), default=None),
-            "notes": notes,
-        }
-        with open(os.path.join(folder, "meta.json"), "w") as f:
-            json.dump(meta, f, indent=2)
-
-        index = self._read_index()
-        index.append({
-            "folder": folder_name,
-            "csv_path": csv_path,
-            **meta,
-        })
-        self._write_index(index)
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f); writer.writerow(FIELD_NAMES + ["state_name"])
+            for r in records: writer.writerow([r.get(k) for k in FIELD_NAMES] + [r.get("state_name")])
+        if config_h_path and os.path.exists(config_h_path): shutil.copyfile(config_h_path, os.path.join(folder, "config_snapshot.h"))
+        meta = {"flight_num": flight_num, "downloaded_at": datetime.now().strftime("%Y-%m-%d_%H%M%S_%f"), "num_records": len(records), "duration_s": records[-1].get("time_ms", 0) / 1000.0 if records else 0, "max_altitude_m": max((r.get("altitude_m") for r in records), default=None), "notes": notes, "category": category, "fingerprint": fingerprint}
+        with open(os.path.join(folder, "meta.json"), "w", encoding="utf-8") as f: json.dump(meta, f, indent=2)
+        index = self._read_index(); index.append({"folder": folder_name, "csv_path": csv_path, **meta}); self._write_index(index)
         return folder
 
     def list_flights(self):
-        """Newest first."""
-        return list(reversed(self._read_index()))
+        entries = []
+        for entry in self._read_index():
+            csv_path = os.path.join(self.root, entry.get("folder", ""), "data.csv")
+            if os.path.isfile(csv_path): entry["csv_path"] = csv_path; entries.append(entry)
+        return sorted(entries, key=lambda e: e.get("downloaded_at", ""), reverse=True)
+
+    def list_by_category(self, category=None):
+        entries = self.list_flights()
+        return entries if category is None else [e for e in entries if e.get("category", "flight") == category]
 
     def delete_local(self, folder_name):
-        index = self._read_index()
-        index = [e for e in index if e["folder"] != folder_name]
-        self._write_index(index)
+        self._write_index([e for e in self._read_index() if e.get("folder") != folder_name])
         folder = os.path.join(self.root, folder_name)
-        if os.path.exists(folder):
-            shutil.rmtree(folder)
+        if os.path.isdir(folder): shutil.rmtree(folder)
+
+    def delete_all_local(self):
+        for entry in self._read_index():
+            folder = os.path.join(self.root, entry.get("folder", ""))
+            if os.path.isdir(folder): shutil.rmtree(folder)
+        self._write_index([])
+
+    def remove_duplicates(self):
+        index = self._read_index(); seen = set(); kept = []
+        for entry in sorted(index, key=lambda e: e.get("downloaded_at", ""), reverse=True):
+            path = os.path.join(self.root, entry.get("folder", ""), "data.csv")
+            if not os.path.isfile(path): continue
+            with open(path, "rb") as f: digest = hashlib.sha256(f.read()).hexdigest()
+            if digest in seen:
+                folder = os.path.dirname(path)
+                if os.path.isdir(folder): shutil.rmtree(folder)
+                continue
+            seen.add(digest); entry.setdefault("fingerprint", digest); kept.append(entry)
+        if len(kept) != len(index): self._write_index(kept)
+        return len(index) - len(kept)

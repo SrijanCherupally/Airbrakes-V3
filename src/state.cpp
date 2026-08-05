@@ -18,6 +18,111 @@ Color codes:
 
 uint32_t lastNonIdleTime = 0;
 
+// Ground test is opt-in through the serial protocol. It never enters the
+// normal BOOST/CONTROL/DESCENT states, so it cannot run flight control.
+static uint32_t groundTestStartMs = 0;
+static uint32_t groundTestLastSweepMs = 0;
+static float groundTestTarget = MOTOR_MIN;
+static bool groundTestOpening = true;
+static bool groundTestSweepStopped = false;
+static bool groundTestClosing = false;
+
+const char* stateName(State state) {
+  static const char* const names[] = {"IDLE", "PAD", "BOOST", "CONTROL",
+                                      "DESCENT", "LANDED", "GROUND_TEST_ARMED",
+                                      "GROUND_TEST_RECORDING"};
+  return state <= STATE_GROUND_TEST_RECORDING ? names[state] : "UNKNOWN";
+}
+
+bool startGroundTest() {
+  // The automatic state machine normally transitions from IDLE to PAD after
+  // its stationary calibration. PAD is still a safe, pre-launch state and
+  // must be accepted here; rejecting it produced the misleading combined
+  // "heartbeat/error/state not ready" message.
+  if ((currentState != STATE_IDLE && currentState != STATE_PAD) ||
+      axisError != 0) {
+    return false;
+  }
+
+  // Heartbeat freshness is intentionally disabled. Ask the ODrive to enter
+  // closed loop now; serviceOdrive() will retry the request while the test is
+  // armed, and the first position command is gated by the reported axis state.
+  serviceOdrive();
+  odrv.clearErrors();
+  odrv.setState(ODriveAxisState::AXIS_STATE_CLOSED_LOOP_CONTROL);
+  initFlash();
+  currentState = STATE_GROUND_TEST_ARMED;
+  groundTestStartMs = 0;
+  groundTestTarget = MOTOR_MIN;
+  groundTestOpening = true;
+  groundTestSweepStopped = false;
+  groundTestClosing = false;
+  // Use one target command per phase. The ODrive performs the motion using
+  // its configured controller rather than being chased by 100 ms setpoints.
+  odrv.setLimits(GROUND_TEST_VELOCITY_LIMIT, GROUND_TEST_CURRENT_LIMIT_A);
+  // Do not send an extra closed command here. The mechanism is already held
+  // closed before the test; the test itself should be one open-then-close
+  // cycle, not close -> open -> close.
+  Serial.println("GROUND_TEST:ARMED");
+  return true;
+}
+
+void abortGroundTest() {
+  if (currentState == STATE_GROUND_TEST_ARMED ||
+      currentState == STATE_GROUND_TEST_RECORDING) {
+    odrvPosition(MOTOR_MIN);
+    finalizeFlightLog();
+    currentState = STATE_IDLE;
+    lastNonIdleTime = millis();
+  }
+}
+
+static void logCurrentSample() {
+  logFlightData(estAltitude(), estVelocity(), estBias(), estRawAccel(),
+                estRawBaro(), motorpos, motorvel, motor_cmd_pos, estCd(),
+                desiredCd, motorcurrent, batteryVoltage, axisError);
+}
+static void groundTestSweepUpdate() {
+  if (groundTestSweepStopped) return;
+
+  if (odriveCurrentLimitExceeded()) {
+    odrvPosition(MOTOR_MIN);
+    groundTestSweepStopped = true;
+    Serial.println("GROUND_TEST:CURRENT_LIMIT: sweep stopped and brakes closed");
+    return;
+  }
+
+  // One command opens fully. Do not generate intermediate targets.
+  if (groundTestOpening) {
+    if (groundTestTarget != MOTOR_MAX) {
+      groundTestTarget = MOTOR_MAX;
+      groundTestLastSweepMs = millis();
+      odrvPosition(MOTOR_MAX);
+      Serial.println("GROUND_TEST:OPEN_COMMANDED: target=-42 velocity_limit=50");
+      return;
+    }
+
+    // Once open feedback arrives, or after the safety timeout, issue the one
+    // close command and remain in the closing phase.
+    if (fabsf(motorpos - MOTOR_MAX) <= GROUND_TEST_POSITION_TOLERANCE ||
+        (uint32_t)(millis() - groundTestLastSweepMs) >= GROUND_TEST_OPEN_TIMEOUT_MS) {
+      groundTestOpening = false;
+      groundTestClosing = true;
+      groundTestTarget = MOTOR_MIN;
+      odrvPosition(MOTOR_MIN);
+      Serial.println("GROUND_TEST:OPEN_REACHED_OR_TIMEOUT: target=0");
+    }
+    return;
+  }
+
+  if (groundTestClosing &&
+      fabsf(motorpos - MOTOR_MIN) <= GROUND_TEST_POSITION_TOLERANCE) {
+    groundTestClosing = false;
+    groundTestSweepStopped = true;
+    Serial.println("GROUND_TEST:CLOSED_ENDPOINT_REACHED");
+  }
+}
+
 // Launch tracking in PAD: arm early and recover pre-roll dv before BOOST.
 constexpr uint32_t PAD_LAUNCH_WINDOW_MS = 100;
 constexpr uint32_t PAD_LAUNCH_CHECK_DELAY_MS = 50;
@@ -72,7 +177,6 @@ void stateUpdate() {
     case STATE_IDLE:
       // Estimator update handles it all, just show color
       prog = (millis() - lastNonIdleTime) / 10000.0f;
-      // LED indicator: yellow if low storage, green otherwise
       if (checkStorageWarning()) {
         ledWrite(0.1f, 0.1f, 0.0f);  // Yellow warning
       } else {
@@ -97,18 +201,6 @@ void stateUpdate() {
         }
         break;
       }
-      // If ODrive heartbeat is stale, show a bright, noticeable LED
-      // indicator in PAD so the operator can see the fault immediately.
-      if (!odriveHeartbeatFresh()) {
-        // Flash bright magenta/red at ~2Hz to attract attention
-        if (((millis() / 250) & 1) == 0) {
-          ledWrite(1.0f, 0.0f, 0.5f);
-        } else {
-          ledWrite(1.0f, 0.0f, 0.0f);
-        }
-        debugPrintf("STATE: PAD - ODrive heartbeat stale\n");
-        break;
-      }
       // Indicate PAD state: blue when shaken (i.e. not stationary),
       // dim green otherwise.
       if (!biasActive) {
@@ -124,9 +216,9 @@ void stateUpdate() {
       debugPrintf("STATE: BOOST\n");
 
       // Log all data (GetOrientation called internally at 100Hz)
-      logFlightData(estAltitude(), estVelocity(), estBias(), estAccel(),
+      logFlightData(estAltitude(), estVelocity(), estBias(), estRawAccel(),
                     estRawBaro(), motorpos, motorvel, motor_cmd_pos, estCd(),
-                    estCd(), motorcurrent, axisError);
+                    estCd(), motorcurrent, batteryVoltage, axisError);
 
       // See if time for control (look at vertical vel)
       if (estVelocity() < VEL_CONTROL_START && estAltitude() > ALT_LANDED &&
@@ -140,9 +232,9 @@ void stateUpdate() {
       debugPrintf("STATE: CONTROL\n");
 
       // Log all data (GetOrientation called internally at 100Hz)
-      logFlightData(estAltitude(), estVelocity(), estBias(), estAccel(),
+      logFlightData(estAltitude(), estVelocity(), estBias(), estRawAccel(),
                     estRawBaro(), motorpos, motorvel, motor_cmd_pos, estCd(),
-                    desiredCd, motorcurrent, axisError);
+                    desiredCd, motorcurrent, batteryVoltage, axisError);
 
       controlUpdate();
 
@@ -155,9 +247,9 @@ void stateUpdate() {
     case STATE_DESCENT:
       ledWrite(1.0f, 1.0f, 1.0f);  // Solid white
       debugPrintf("STATE: DESCENT\n");
-      logFlightData(estAltitude(), estVelocity(), estBias(), estAccel(),
+      logFlightData(estAltitude(), estVelocity(), estBias(), estRawAccel(),
                     estRawBaro(), motorpos, motorvel, motor_cmd_pos, estCd(),
-                    estCd(), motorcurrent, axisError);
+                    estCd(), motorcurrent, batteryVoltage, axisError);
       odrvPosition(MOTOR_MIN);  // Closed
 
       if (estAltitude() < ALT_LANDED) {
@@ -169,6 +261,25 @@ void stateUpdate() {
     case STATE_LANDED:
       debugPrintf("STATE: LANDED\n");
       ledWrite(1.0f, 0.0f, 1.0f);  // Solid purple
+      break;
+
+    case STATE_GROUND_TEST_ARMED:
+      // Cyan pulse: explicit test mode, waiting for a hand shake.
+      ledWrite(0.0f, 0.25f, ((millis() / 250) & 1) ? 0.15f : 0.7f);
+      debugPrintf("STATE: GROUND TEST ARMED\n");
+      break;
+
+    case STATE_GROUND_TEST_RECORDING:
+      ledWrite(0.0f, 0.5f, 0.5f);  // Solid cyan while log is active.
+      logCurrentSample();
+      groundTestSweepUpdate();
+      if ((uint32_t)(millis() - groundTestStartMs) >= GROUND_TEST_DURATION_MS) {
+        odrvPosition(MOTOR_MIN);
+        finalizeFlightLog();
+        currentState = STATE_IDLE;
+        lastNonIdleTime = millis();
+        Serial.println("GROUND_TEST:COMPLETE: log closed, brakes commanded closed");
+      }
       break;
   }
 }
@@ -183,6 +294,9 @@ void estimatorUpdate() {
   switch (currentState) {
     case STATE_IDLE: {
       imu.update();
+      // Keep hardware telemetry alive before the estimator enters PAD. This
+      // also makes a disconnected barometer visible in logs/diagnostics.
+      baro.update();
       float aZ = imu.getAccZ();  // Read Z accel (m/s^2)
       if (aZ < 9.0f || aZ > 11.0f) {
         // Movement, not idle
@@ -233,6 +347,27 @@ void estimatorUpdate() {
 
     case STATE_LANDED:
       // Nothing
+      break;
+
+    case STATE_GROUND_TEST_ARMED: {
+      imu.update();
+      float accelMag = imu.getAccZ();
+      if (accelMag < 0.0f) accelMag = -accelMag;
+      if (accelMag >= GROUND_TEST_SHAKE_ACCEL) {
+        filterReset();
+        groundTestStartMs = millis();
+        groundTestLastSweepMs = groundTestStartMs;
+        groundTestTarget = MOTOR_MIN;
+        groundTestOpening = true;
+        groundTestSweepStopped = false;
+        currentState = STATE_GROUND_TEST_RECORDING;
+        Serial.println("GROUND_TEST:TRIGGERED: recording and sweep started");
+      }
+      break;
+    }
+
+    case STATE_GROUND_TEST_RECORDING:
+      filterUpdate();
       break;
   }
 }

@@ -1,9 +1,9 @@
 """
 Serial protocol client for the Airbrakes V3 flight computer.
 
-Mirrors the exact command set implemented in src/flash.cpp:
-  LIST / CURRENT / GET <n> / DELETE <n> / INFO
-and the 68-byte FlightRecord binary layout (<I14fII).
+Mirrors the command set implemented in src/flash.cpp, including:
+  LIST / CURRENT / GET <n> / DELETE <n> / INFO / GROUND_TEST ...
+    and the 72-byte FlightRecord binary layout (<I15fII).
 
 This module is GUI-framework-agnostic: it does blocking I/O and reports
 progress via optional callbacks, so it's meant to be called from a
@@ -16,17 +16,18 @@ import time
 import serial
 import serial.tools.list_ports
 
-RECORD_FORMAT = "<I14fII"
-RECORD_SIZE = struct.calcsize(RECORD_FORMAT)  # 68 bytes
+RECORD_FORMAT = "<I15fII"
+RECORD_SIZE = struct.calcsize(RECORD_FORMAT)  # 72 bytes
 
 FIELD_NAMES = [
     "time_ms", "altitude_m", "velocity_ms", "accel_bias_ms2",
     "raw_accel_ms2", "raw_baro_m", "motor_pos", "motor_vel",
     "motor_cmd_pos", "roll_rad", "pitch_rad", "yaw_rad",
-    "Cd", "desired_Cd", "motor_current", "state", "axis_error",
+    "Cd", "desired_Cd", "motor_current", "battery_voltage", "state", "axis_error",
 ]
 
-STATE_NAMES = ["IDLE", "PAD", "BOOST", "CONTROL", "DESCENT", "LANDED"]
+STATE_NAMES = ["IDLE", "PAD", "BOOST", "CONTROL", "DESCENT", "LANDED",
+               "GROUND_TEST_ARMED", "GROUND_TEST_RECORDING"]
 
 USB_MANUFACTURER = "Srijan"
 USB_PRODUCT = "AIrbrakes V3"
@@ -164,10 +165,35 @@ class FlightComputerLink:
                         return None
         return None
 
+    def ground_test_start(self):
+        """Arm the explicit shake-triggered ground test, or raise on refusal."""
+        self._send("GROUND_TEST START")
+        return self._ground_test_response()
+
+    def ground_test_abort(self):
+        """Immediately stop a ground test and command the brakes closed."""
+        self._send("GROUND_TEST ABORT")
+        return self._ground_test_response()
+
+    def ground_test_status(self):
+        self._send("GROUND_TEST STATUS")
+        return self._ground_test_response()
+
+    def _ground_test_response(self):
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if self.ser.in_waiting:
+                line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+                if line.startswith("GROUND_TEST:ERROR"):
+                    raise FlightComputerError(line)
+                if line.startswith("GROUND_TEST:"):
+                    return line
+        raise FlightComputerError("No response to ground-test command.")
+
     def download_flight(self, flight_num, progress_cb=None):
         """
         Downloads /flight_<n>.bin and returns a list of dict records
-        (already unpacked from the 68-byte binary format).
+        (already unpacked from the 72-byte binary format).
         progress_cb(bytes_received) is called periodically if given.
         """
         self._send(f"GET {flight_num}")

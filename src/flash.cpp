@@ -5,7 +5,7 @@
 #include "orientation.h"
 #include "state.h"
 
-// Binary data structure (68 bytes per record)
+// Binary data structure (72 bytes per record)
 struct __attribute__((packed)) FlightRecord {
   uint32_t time_ms;
   float altitude_m;
@@ -22,6 +22,7 @@ struct __attribute__((packed)) FlightRecord {
   float Cd;
   float desired_Cd;
   float motor_current;
+  float battery_voltage;
   uint32_t state;
   uint32_t axis_error;
 };
@@ -102,7 +103,7 @@ bool checkStorageWarning() {
 void logFlightData(float altitude, float velocity, float accelBias,
                    float rawAccel, float rawBaro, float motorPos,
                    float motorVel, float motorCmdPos, float Cd, float desiredCd,
-                   float motorCurrent, uint32_t axisError) {
+                   float motorCurrent, float batteryVoltage, uint32_t axisError) {
   // Create file on first log entry (lazy initialization)
   if (!dataFile) {
     if (!fsInitialized) return;  // Filesystem not ready
@@ -160,6 +161,7 @@ void logFlightData(float altitude, float velocity, float accelBias,
   writeBuffer[bufferHead].Cd = Cd;
   writeBuffer[bufferHead].desired_Cd = desiredCd;
   writeBuffer[bufferHead].motor_current = motorCurrent;
+  writeBuffer[bufferHead].battery_voltage = batteryVoltage;
   writeBuffer[bufferHead].state = (uint32_t)currentState;
   writeBuffer[bufferHead].axis_error = axisError;
 
@@ -177,6 +179,14 @@ void flushLogBuffer() {
 
   // Flush to disk so file size is accurate and data persists
   dataFile.flush();
+}
+
+void finalizeFlightLog() {
+  flushLogBuffer();
+  if (dataFile) {
+    dataFile.close();
+    Serial.println("FLASH:LOG_CLOSED");
+  }
 }
 
 void handleFlashCommands() {
@@ -310,6 +320,18 @@ void handleFlashCommands() {
         }
 
         Serial.println(" used");
+      } else if (commandBuffer == "GROUND_TEST START") {
+        if (startGroundTest()) {
+          Serial.println("GROUND_TEST:ARMED: Shake the rocket to start recording");
+        } else {
+          Serial.println("GROUND_TEST:ERROR: ODrive heartbeat/error/state not ready");
+        }
+      } else if (commandBuffer == "GROUND_TEST ABORT") {
+        abortGroundTest();
+        Serial.println("GROUND_TEST:ABORTED");
+      } else if (commandBuffer == "GROUND_TEST STATUS") {
+        Serial.print("GROUND_TEST:STATE:");
+        Serial.println(stateName(currentState));
       }
 
       commandBuffer = "";

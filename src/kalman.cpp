@@ -41,6 +41,10 @@ void Kalman::reset() {
   R_altitude = 2.0f;
 }
 
+void Kalman::setBias(float value) {
+  bias = value;
+}
+
 void Kalman::predict() {
   getWorldAcceleration(worldAcc);
 
