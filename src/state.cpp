@@ -4,7 +4,7 @@
 
 #include "config.h"
 
-State currentState = STATE_IDLE;
+volatile State currentState = STATE_IDLE;
 
 /*
 Color codes:
@@ -71,8 +71,12 @@ void abortGroundTest() {
   if (currentState == STATE_GROUND_TEST_ARMED ||
       currentState == STATE_GROUND_TEST_RECORDING) {
     odrvPosition(MOTOR_MIN);
-    finalizeFlightLog();
+    // Stop the producer before flushing/closing its queue. One estimator pass
+    // can already be in flight on core 1, so give it one 500 Hz period to
+    // observe the state change before the file is closed.
     currentState = STATE_IDLE;
+    delay(3);
+    finalizeFlightLog();
     lastNonIdleTime = millis();
   }
 }
@@ -237,7 +241,10 @@ void stateUpdate() {
 
       if (estAltitude() < ALT_LANDED) {
         currentState = STATE_LANDED;
-        flushLogBuffer();  // Flush log buffer
+        // A landed flight is complete. Leaving the file open makes CURRENT
+        // and DELETE treat it as an active log indefinitely.
+        delay(3);
+        finalizeFlightLog();
       }
       break;
 
@@ -257,8 +264,9 @@ void stateUpdate() {
       groundTestSweepUpdate();
       if ((uint32_t)(millis() - groundTestStartMs) >= GROUND_TEST_DURATION_MS) {
         odrvPosition(MOTOR_MIN);
-        finalizeFlightLog();
         currentState = STATE_IDLE;
+        delay(3);
+        finalizeFlightLog();
         lastNonIdleTime = millis();
         Serial.println("GROUND_TEST:COMPLETE: log closed, brakes commanded closed");
       }

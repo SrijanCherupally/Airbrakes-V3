@@ -17,7 +17,9 @@ typedef enum State {
   STATE_GROUND_TEST_RECORDING
 } State;
 
-extern State currentState;
+// Read on both RP2350 cores. Volatile ensures each loop observes a state
+// transition made by the other core; queue publication itself uses fences.
+extern volatile State currentState;
 void debugPrintf(const char* format, ...);
 
 void stateInit();

@@ -114,7 +114,15 @@ def download_flight(ser, flight_num, output_dir="flight_data", auto_delete=False
     while time.time() < timeout:
         if ser.in_waiting:
             line = ser.readline().decode('utf-8', errors='ignore').strip()
-            if line == "FLASH:DATA_START":
+            if line.startswith("FLASH:DATA_START:"):
+                try:
+                    expected_bytes = int(line.rsplit(":", 1)[1])
+                except ValueError:
+                    print("Invalid payload length from device")
+                    return None
+                if expected_bytes < 0:
+                    print("Invalid negative payload length from device")
+                    return None
                 data_started = True
                 break
             elif line.startswith("FLASH:ERROR"):
@@ -128,15 +136,19 @@ def download_flight(ser, flight_num, output_dir="flight_data", auto_delete=False
     binary_data = bytearray()
     timeout = time.time() + 10
 
-    while time.time() < timeout:
-        if ser.in_waiting:
-            chunk = ser.read(ser.in_waiting)
-            if b'FLASH:END' in chunk:
-                end_pos = chunk.find(b'FLASH:END')
-                binary_data.extend(chunk[:end_pos])
-                break
+    while len(binary_data) < expected_bytes and time.time() < timeout:
+        chunk = ser.read(expected_bytes - len(binary_data))
+        if chunk:
             binary_data.extend(chunk)
-            timeout = time.time() + 5
+            timeout = time.time() + 10
+
+    if len(binary_data) != expected_bytes:
+        print(f"Incomplete payload: received {len(binary_data)} of {expected_bytes} bytes")
+        return None
+    terminator = ser.readline().decode('utf-8', errors='ignore').strip()
+    if terminator != "FLASH:END":
+        print(f"Missing payload terminator: {terminator!r}")
+        return None
 
     if not binary_data:
         print("✗ No data received")
@@ -275,7 +287,7 @@ def interactive_mode(port):
                         parts = flight_info.split("_")
                         if len(parts) >= 2:
                             flight_num = parts[1].split(".")[0]
-                            download_flight(ser, flight_num, auto_delete=True)
+                            download_flight(ser, flight_num)
                 else:
                     print("\nNo flights to download")
 
@@ -353,7 +365,7 @@ def main():
                 parts = flight_info.split("_")
                 if len(parts) >= 2:
                     flight_num = parts[1].split(".")[0]
-                    download_flight(ser, flight_num, auto_delete=True)
+                    download_flight(ser, flight_num)
             ser.close()
         else:
             print("Usage:")

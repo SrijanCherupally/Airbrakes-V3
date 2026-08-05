@@ -37,7 +37,7 @@ the `FLASH:` prefix.
 | `INFO` | Report used and total storage. |
 | `LIST` | List flight files and mark the active file. |
 | `CURRENT` | Report the flight number currently being logged. |
-| `GET <n>` | Stream flight `<n>` between `FLASH:DATA_START` and `FLASH:END`. |
+| `GET <n>` | Stream flight `<n>` as `FLASH:DATA_START:<byte_count>`, exactly that many binary bytes, then `FLASH:END`. |
 | `DELETE <n>` | Delete flight `<n>` unless it is active. |
 
 The firmware flushes and temporarily closes an active file before serving

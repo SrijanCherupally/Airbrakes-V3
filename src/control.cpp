@@ -69,6 +69,10 @@ void controlUpdate() {
   static bool controllerActive = false;
   static uint32_t lastUpdateUs = 0;
   static float posIntegral = MOTOR_MIN;
+  const float positionLow = min(MOTOR_MIN, MOTOR_MAX);
+  const float positionHigh = max(MOTOR_MIN, MOTOR_MAX);
+  // More drag must mean a more-open brake regardless of encoder polarity.
+  const float openingDirection = MOTOR_MAX >= MOTOR_MIN ? 1.0f : -1.0f;
 
   float accel = estAccel();
   float velocity = estVelocity();
@@ -115,22 +119,22 @@ void controlUpdate() {
     cdError = 0.0f;
   }
 
-  float unsatTarget = posIntegral + CD_CTRL_KP * cdError;
+  float unsatTarget = posIntegral + openingDirection * CD_CTRL_KP * cdError;
   float targetPos = unsatTarget;
-  if (targetPos < MOTOR_MIN) targetPos = MOTOR_MIN;
-  if (targetPos > MOTOR_MAX) targetPos = MOTOR_MAX;
+  if (targetPos < positionLow) targetPos = positionLow;
+  if (targetPos > positionHigh) targetPos = positionHigh;
 
   // Anti-windup: stop integrating when saturated and error pushes further out.
-  bool pushingHigh = (targetPos >= MOTOR_MAX) && (cdError > 0.0f);
-  bool pushingLow = (targetPos <= MOTOR_MIN) && (cdError < 0.0f);
-  if (!(pushingHigh || pushingLow)) {
-    posIntegral += CD_CTRL_KI * cdError * dt;
-    if (posIntegral < MOTOR_MIN) posIntegral = MOTOR_MIN;
-    if (posIntegral > MOTOR_MAX) posIntegral = MOTOR_MAX;
+  bool pushingOpen = (targetPos == MOTOR_MAX) && (cdError > 0.0f);
+  bool pushingClosed = (targetPos == MOTOR_MIN) && (cdError < 0.0f);
+  if (!(pushingOpen || pushingClosed)) {
+    posIntegral += openingDirection * CD_CTRL_KI * cdError * dt;
+    if (posIntegral < positionLow) posIntegral = positionLow;
+    if (posIntegral > positionHigh) posIntegral = positionHigh;
   }
 
-  targetPos = posIntegral + CD_CTRL_KP * cdError;
-  if (targetPos < MOTOR_MIN) targetPos = MOTOR_MIN;
-  if (targetPos > MOTOR_MAX) targetPos = MOTOR_MAX;
+  targetPos = posIntegral + openingDirection * CD_CTRL_KP * cdError;
+  if (targetPos < positionLow) targetPos = positionLow;
+  if (targetPos > positionHigh) targetPos = positionHigh;
   odrvPosition(targetPos);
 }

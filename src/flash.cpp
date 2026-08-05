@@ -29,6 +29,9 @@ struct __attribute__((packed)) FlightRecord {
   uint32_t axis_error;
 };
 
+static_assert(sizeof(FlightRecord) == 76,
+              "FlightRecord must match the <I16fII ground-station format");
+
 // Single-producer (core 1 estimator), single-consumer (core 0 logger) queue.
 // Records are produced at 100 Hz, so this gives over 20 seconds of margin.
 #define BUFFER_SIZE 2048
@@ -274,7 +277,11 @@ void handleFlashCommands() {
         Serial.println("FLASH:END");
       } else if (commandBuffer == "CURRENT") {
         Serial.print("FLASH:CURRENT:");
-        Serial.println(flightNumber);
+        if (dataFile) {
+          Serial.println(flightNumber);
+        } else {
+          Serial.println("NONE");
+        }
       } else if (commandBuffer.startsWith("GET ")) {
         int flightNum = commandBuffer.substring(4).toInt();
         String filename = "/flight_" + String(flightNum) + ".bin";
@@ -289,7 +296,11 @@ void handleFlashCommands() {
 
         File f = LittleFS.open(filename, "r");
         if (f) {
-          Serial.println("FLASH:DATA_START");
+          // The payload is arbitrary binary and can legitimately contain the
+          // bytes in a text sentinel such as "FLASH:END".  Announce its exact
+          // size so clients can read it without scanning the payload.
+          Serial.print("FLASH:DATA_START:");
+          Serial.println(f.size());
           // Send in chunks to avoid blocking
           uint8_t chunk[256];
           while (f.available()) {

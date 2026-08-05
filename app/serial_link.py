@@ -214,7 +214,13 @@ class FlightComputerLink:
         while time.time() < deadline:
             if self.ser.in_waiting:
                 line = self.ser.readline().decode("utf-8", errors="ignore").strip()
-                if line == "FLASH:DATA_START":
+                if line.startswith("FLASH:DATA_START:"):
+                    try:
+                        expected_bytes = int(line.rsplit(":", 1)[1])
+                    except ValueError as exc:
+                        raise FlightComputerError("Invalid payload length from device.") from exc
+                    if expected_bytes < 0:
+                        raise FlightComputerError("Invalid negative payload length from device.")
                     started = True
                     break
                 if line.startswith("FLASH:ERROR"):
@@ -224,17 +230,21 @@ class FlightComputerLink:
 
         binary_data = bytearray()
         deadline = time.time() + 10.0
-        while time.time() < deadline:
-            if self.ser.in_waiting:
-                chunk = self.ser.read(self.ser.in_waiting)
-                if b"FLASH:END" in chunk:
-                    end_pos = chunk.find(b"FLASH:END")
-                    binary_data.extend(chunk[:end_pos])
-                    break
+        while len(binary_data) < expected_bytes and time.time() < deadline:
+            chunk = self.ser.read(expected_bytes - len(binary_data))
+            if chunk:
                 binary_data.extend(chunk)
                 deadline = time.time() + 5.0
                 if progress_cb:
                     progress_cb(len(binary_data))
+
+        if len(binary_data) != expected_bytes:
+            raise FlightComputerError(
+                f"Incomplete flight payload: received {len(binary_data)} of {expected_bytes} bytes."
+            )
+        terminator = self.ser.readline().decode("utf-8", errors="ignore").strip()
+        if terminator != "FLASH:END":
+            raise FlightComputerError(f"Missing flight payload terminator: {terminator!r}")
 
         if not binary_data:
             raise FlightComputerError("No data received for that flight.")
