@@ -8,46 +8,91 @@ bool BARO::begin() {
 }
 
 bool BARO::update() {
+  ++updateCount;
   if (!initialized) return false;
-  // Pressure and temperature ready bits are independent. Waiting for both in
-  // the same status read can miss a sample on the DPS368, leaving altitude at
-  // its initialization value forever. Pressure is the sample validity flag;
-  // retain the latest temperature when its own bit is ready.
-  uint32_t start = millis();
-  bool pressureReady = false;
-  while ((uint32_t)(millis() - start) < 100) {
-    uint8_t flags = dpsRead8(REG_MEAS_CFG);
-    if (flags & MEAS_TMP_RDY) rawT = readTempRaw();
-    if (flags & MEAS_PRS_RDY) {
-      rawP = readPressureRaw();
-      pressureReady = true;
-      break;
-    }
+  // The DPS368 runs in background mode at 32 Hz. Never wait here: a blocking
+  // readiness loop can stall the 500 Hz IMU estimator for 100 ms and starve
+  // the core-0 CAN service loop when called from a shared path.
+  uint8_t flags = dpsRead8(REG_MEAS_CFG);
+  lastStatus = flags;
+  if (flags & MEAS_TMP_RDY) rawT = readTempRaw();
+  if (!(flags & MEAS_PRS_RDY)) return false;
+  int32_t candidateRawP = readPressureRaw();
+  float candidateTempC = calcTemperatureC(rawT);
+  float candidatePressurePa = calcPressurePa(candidateRawP, rawT);
+  float candidateAltitudeCm = pressureToRelAlt_cm(
+      candidatePressurePa, baselinePressure, candidateTempC + 273.15f);
+
+  // A short/noisy I2C read must not replace the last good sensor value.  The
+  // estimator and logger deliberately use the held value between 32 Hz DPS368
+  // conversions, so a 500 Hz loop never turns normal "not ready yet" status
+  // into a missing/zero barometer trace.
+  if (!isfinite(candidateTempC) || candidateTempC <= -80.0f ||
+      candidateTempC >= 100.0f || !isfinite(candidatePressurePa) ||
+      candidatePressurePa <= 1000.0f || candidatePressurePa >= 130000.0f ||
+      !isfinite(candidateAltitudeCm) || fabsf(candidateAltitudeCm) >= 10000000.0f) {
+    ++invalidSampleCount;
+    lastError = "invalid sample or incomplete I2C read";
+    return false;
   }
-  if (!pressureReady) return false;
-  tempC = calcTemperatureC(rawT);
-  pressurePa = calcPressurePa(rawP, rawT);
-  altitude_cm =
-      pressureToRelAlt_cm(pressurePa, baselinePressure, tempC + 273.15f);
+  rawP = candidateRawP;
+  tempC = candidateTempC;
+  pressurePa = candidatePressurePa;
+  altitude_cm = candidateAltitudeCm;
+  ++validSampleCount;
+  lastError = "ok";
   return true;
+}
+
+void BARO::printDiagnostics() const {
+  Serial.print("DPS368_DIAG: initialized=");
+  Serial.print(initialized ? "YES" : "NO");
+  Serial.print(" address=0x");
+  Serial.print(i2cAddress, HEX);
+  Serial.print(" status=0x");
+  Serial.print(lastStatus, HEX);
+  Serial.print(" updates=");
+  Serial.print(updateCount);
+  Serial.print(" valid=");
+  Serial.print(validSampleCount);
+  Serial.print(" invalid=");
+  Serial.print(invalidSampleCount);
+  Serial.print(" pressure_pa=");
+  Serial.print(pressurePa, 2);
+  Serial.print(" altitude_m=");
+  Serial.print(getAltitudeM(), 3);
+  Serial.print(" error=");
+  Serial.println(lastError);
 }
 
 bool BARO::isConnected() {
   return initialized;
 }
 
+bool BARO::hasValidSample() const {
+  return initialized && isfinite(pressurePa) && pressurePa > 1000.0f &&
+         pressurePa < 130000.0f && isfinite(tempC) && tempC > -80.0f &&
+         tempC < 100.0f && isfinite(altitude_cm) && fabsf(altitude_cm) < 10000000.0f;
+}
+
 bool BARO::init() {
+  initialized = false;
+  lastError = "starting";
   dpsWire.setSCL(DPS368_SCL);
   dpsWire.setSDA(DPS368_SDA);
   dpsWire.begin();
   dpsWire.setClock(400000);  // 400kHz fast mode
 
-  if (!selectAddress()) return false;
+  if (!selectAddress()) {
+    lastError = "no DPS368 at 0x76 or 0x77";
+    return false;
+  }
 
   dpsWrite(REG_RESET, 0x09);
   delay(50);
   if (!waitForFlags(MEAS_SENSOR_RDY, 100) ||
       !waitForFlags(MEAS_COEF_RDY, 100)) {
+    lastError = "sensor/coefficients not ready after reset";
     return false;
   }
 
@@ -66,11 +111,23 @@ bool BARO::init() {
   dpsWrite(REG_MEAS_CFG, 0x07);
 
   // Set baseline
-  if (!waitForFlags(MEAS_PRS_RDY, 100)) return false;
+  if (!waitForFlags(MEAS_PRS_RDY, 100)) {
+    lastError = "pressure conversion not ready";
+    return false;
+  }
   rawP = readPressureRaw();
-  if (waitForFlags(MEAS_TMP_RDY, 100)) rawT = readTempRaw();
+  if (!waitForFlags(MEAS_TMP_RDY, 100)) {
+    lastError = "temperature conversion not ready";
+    return false;
+  }
+  rawT = readTempRaw();
   baselinePressure = calcPressurePa(rawP, rawT);
-  return isfinite(baselinePressure) && baselinePressure > 1000.0f;
+  if (!isfinite(baselinePressure) || baselinePressure <= 1000.0f) {
+    lastError = "invalid baseline pressure/calibration";
+    return false;
+  }
+  lastError = "initialized; waiting for sample";
+  return true;
 }
 
 bool BARO::selectAddress() {
@@ -103,6 +160,7 @@ uint8_t BARO::dpsRead8(uint8_t reg) {
 }
 
 void BARO::dpsReadBlock(uint8_t reg, uint8_t *buf, uint8_t len) {
+  for (uint8_t i = 0; i < len; ++i) buf[i] = 0;
   dpsWire.beginTransmission(i2cAddress);
   dpsWire.write(reg);
   dpsWire.endTransmission(false);  // repeated start, keep bus held

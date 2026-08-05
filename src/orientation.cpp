@@ -149,6 +149,17 @@ void getWorldAcceleration(float world[3]) {
   world[2] = R[2][0] * body[0] + R[2][1] * body[1] + R[2][2] * body[2];
 
   world[2] -= G;
+
+  // A corrupt IMU sample or quaternion must never become an input to the
+  // altitude integrator. Return a bounded neutral sample; the estimator's
+  // validity guard will also reject any non-finite value defensively.
+  if (!isfinite(world[0]) || !isfinite(world[1]) || !isfinite(world[2]) ||
+      fabsf(world[0]) > 200.0f || fabsf(world[1]) > 200.0f ||
+      fabsf(world[2]) > 200.0f) {
+    world[0] = 0.0f;
+    world[1] = 0.0f;
+    world[2] = 0.0f;
+  }
 }
 
 void GetOrientation(float *roll, float *pitch, float *yaw) {

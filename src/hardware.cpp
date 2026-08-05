@@ -29,11 +29,15 @@ static uint32_t lastPositionDiagnosticMs = 0;
 static uint32_t lastTelemetryRequestMs = 0;
 static uint32_t lastTelemetryDiagnosticMs = 0;
 static uint32_t lastBatterySampleMs = 0;
+static uint32_t odriveRxFrames = 0;
+static uint32_t odriveTxFailures = 0;
+static uint32_t odriveTelemetryTimeouts = 0;
 // ODrive heartbeat rate is configurable and is commonly 1 Hz.  350 ms made
 // a healthy controller appear stale between heartbeat frames.
 static constexpr uint32_t ODRIVE_HEARTBEAT_TIMEOUT_MS = 2500;
 static constexpr uint32_t ODRIVE_FEEDBACK_TIMEOUT_MS = 350;
 static constexpr uint32_t ODRIVE_ENABLE_RETRY_MS = 100;
+static bool preflightPassed = false;
 
 // MCP2515 callbacks execute from the interrupt handler.  Do not perform SPI,
 // Serial, or ODrive decoding there; queue the frame and process it in the main
@@ -65,6 +69,7 @@ static void canCallback(int packetSize) {
 }
 
 void onCanMessage(const CanMsg& msg) {
+  ++odriveRxFrames;
   odrv.onReceive(msg.id, msg.len, msg.buffer);
 }
 
@@ -106,6 +111,43 @@ void ledWrite(float r, float g, float b) {
   led.setColor(r, g, b);
 }
 
+bool hardwarePreflightCheck() {
+  bool imuOk = imu.isInitialized();
+  bool baroOk = baro.isConnected();
+  bool imuSampleOk = false;
+  bool baroSampleOk = false;
+
+  for (int i = 0; i < 10; ++i) {
+    imu.update();
+    imuSampleOk = imu.hasValidSample();
+    if (baro.update()) baroSampleOk = baro.hasValidSample();
+    delay(5);
+  }
+
+  // Exercise CAN RX and the heartbeat before declaring ODrive usable.
+  serviceOdrive();
+  uint32_t deadline = millis() + 500;
+  while ((int32_t)(millis() - deadline) < 0) {
+    serviceOdrive();
+    if (odriveHeartbeatFresh() && axisError == 0) break;
+    delay(5);
+  }
+  bool odriveOk = odriveHeartbeatFresh() && axisError == 0;
+
+  Serial.print("PREFLIGHT: IMU=");
+  Serial.print(imuOk && imuSampleOk ? "OK" : "FAIL");
+  Serial.print(" ACCEL_XYZ_GYRO_XYZ=");
+  Serial.print(imuSampleOk ? "OK" : "FAIL");
+  Serial.print(" DPS368=");
+  Serial.print(baroOk && baroSampleOk ? "OK" : "FAIL");
+  Serial.print(" ODRIVE=");
+  Serial.println(odriveOk ? "OK" : "FAIL");
+  preflightPassed = imuOk && imuSampleOk && baroOk && baroSampleOk && odriveOk;
+  return preflightPassed;
+}
+
+bool hardwarePreflightPassed() { return preflightPassed; }
+
 void setupHardware() {
   Serial.begin(115200);
 
@@ -113,14 +155,17 @@ void setupHardware() {
   pinMode(BATTERY_VOLTAGE_PIN, INPUT);
   updateBatteryVoltage();
 
-  ledWrite(0.04f, 0.04f, 0.04f);
+  // Aqua means the board is alive; white is reserved for descent.
+  ledWrite(0.0f, 0.15f, 0.10f);
 
   // DPS368 barometer (I2C). begin() probes both valid DPS368 addresses.
   if (!baro.begin()) {
     Serial.println("WARNING: DPS368 initialization failed");
+    baro.printDiagnostics();
   } else {
     Serial.print("DPS368 OK, baseline pressure Pa: ");
     Serial.println(baro.getBaselinePressure(), 2);
+    baro.printDiagnostics();
   }
 
   // ICM42688 IMU (SPI1)
@@ -179,23 +224,8 @@ void updateBatteryVoltage() {
 }
 
 void EnableOdrv() {
-  serviceOdrive();
-  if (!odriveHeartbeatFresh() ||
-      lastHeartbeat.Axis_State == ODriveAxisState::AXIS_STATE_CLOSED_LOOP_CONTROL) {
-    return;
-  }
-  odrv.clearErrors();
-  delay(1);
-  odrv.setState(ODriveAxisState::AXIS_STATE_CLOSED_LOOP_CONTROL);
-  for (int i = 0; i < 15; ++i) {
-    delay(10);
-    pumpEvents(CAN);
-  }
-  if (lastHeartbeat.Axis_State == ODriveAxisState::AXIS_STATE_IDLE &&
-      lastHeartbeat.Axis_Error != 0) {
-    Serial.print("ODRIVE_ERROR: 0x");
-    Serial.println(lastHeartbeat.Axis_Error, HEX);
-  }
+  // Kept for API compatibility. CAN/MCP2515 access is owned by core 0;
+  // serviceOdrive() in loop() performs the enable/retry operation there.
 }
 
 bool odriveHeartbeatFresh() {
@@ -211,6 +241,10 @@ bool odriveCurrentLimitExceeded() {
   return fabsf(motorcurrent) >= GROUND_TEST_CURRENT_LIMIT_A;
 }
 
+uint32_t odriveRxFrameCount() { return odriveRxFrames; }
+uint32_t odriveTxFailureCount() { return odriveTxFailures; }
+uint32_t odriveTelemetryTimeoutCount() { return odriveTelemetryTimeouts; }
+
 void serviceOdrive() {
   updateBatteryVoltage();
   // Poll the MCP2515, matching the known-good standalone implementation.
@@ -221,7 +255,7 @@ void serviceOdrive() {
   // publish Get_Iq or Encoder_Estimates; these are RTR responses unless
   // cyclic CAN messages have been configured on the controller.
   uint32_t telemetryNow = millis();
-  if ((uint32_t)(telemetryNow - lastTelemetryRequestMs) >= 100) {
+  if ((uint32_t)(telemetryNow - lastTelemetryRequestMs) >= 20) {
     lastTelemetryRequestMs = telemetryNow;
     Get_Encoder_Estimates_msg_t feedback;
     bool feedbackReceived = odrv.getFeedback(feedback, 5);
@@ -230,11 +264,15 @@ void serviceOdrive() {
       // Never overwrite the last good sample with a timed-out default object.
       motorpos = feedback.Pos_Estimate;
       motorvel = feedback.Vel_Estimate;
+    } else {
+      ++odriveTelemetryTimeouts;
     }
     Get_Iq_msg_t currents;
     bool currentsReceived = odrv.getCurrents(currents, 5);
     if (currentsReceived) {
       motorcurrent = currents.Iq_Measured;
+    } else {
+      ++odriveTelemetryTimeouts;
     }
     if ((uint32_t)(telemetryNow - lastTelemetryDiagnosticMs) >= 1000) {
       lastTelemetryDiagnosticMs = telemetryNow;
@@ -247,7 +285,13 @@ void serviceOdrive() {
       Serial.print(" iq=");
       Serial.print(currentsReceived ? "OK" : "TIMEOUT");
       Serial.print(" iq_A=");
-      Serial.println(motorcurrent, 4);
+      Serial.print(motorcurrent, 4);
+      Serial.print(" rx_frames=");
+      Serial.print(odriveRxFrames);
+      Serial.print(" rtr_timeouts=");
+      Serial.print(odriveTelemetryTimeouts);
+      Serial.print(" tx_failures=");
+      Serial.println(odriveTxFailures);
     }
   }
 
@@ -267,12 +311,12 @@ void serviceOdrive() {
 
 void odrvPosition(float pos) {
   motor_cmd_pos = pos;
-  serviceOdrive();
   // Heartbeat is status telemetry, not a transmit prerequisite.  The
   // standalone 9967b65 controller sent setpoints even while waiting for the
   // first heartbeat.  Gating here made the motor hold its old position
   // forever when RX/heartbeat delivery was unavailable.
   bool sent = odrv.setPosition(pos);
+  if (!sent) ++odriveTxFailures;
   // Report command transmission once per second. This distinguishes a
   // working sweep from a CAN TX failure without flooding the flight log.
   uint32_t nowMs = millis();

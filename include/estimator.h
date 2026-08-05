@@ -20,6 +20,7 @@ float estAltitude();
 float estVelocity();
 float estAccel();    // corrected world-frame vertical acceleration (m/s^2)
 float estRawAccel(); // uncorrected world-frame vertical acceleration (m/s^2)
+float estVerticalAccel(); // corrected world-frame vertical acceleration (m/s^2)
 float estBias();
 float estRawBaro();  // latest raw barometric altitude (m)
 float estCd();       // low-pass filtered coefficient of drag

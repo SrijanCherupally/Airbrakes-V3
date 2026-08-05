@@ -77,11 +77,6 @@ void abortGroundTest() {
   }
 }
 
-static void logCurrentSample() {
-  logFlightData(estAltitude(), estVelocity(), estBias(), estRawAccel(),
-                estRawBaro(), motorpos, motorvel, motor_cmd_pos, estCd(),
-                desiredCd, motorcurrent, batteryVoltage, axisError);
-}
 static void groundTestSweepUpdate() {
   if (groundTestSweepStopped) return;
 
@@ -177,6 +172,7 @@ void stateUpdate() {
     case STATE_IDLE:
       // Estimator update handles it all, just show color
       prog = (millis() - lastNonIdleTime) / 10000.0f;
+      if (prog > 1.0f) prog = 1.0f;
       if (checkStorageWarning()) {
         ledWrite(0.1f, 0.1f, 0.0f);  // Yellow warning
       } else {
@@ -215,11 +211,6 @@ void stateUpdate() {
       ledWrite(1.0f, 0.0f, 0.0f);  // Solid red
       debugPrintf("STATE: BOOST\n");
 
-      // Log all data (GetOrientation called internally at 100Hz)
-      logFlightData(estAltitude(), estVelocity(), estBias(), estRawAccel(),
-                    estRawBaro(), motorpos, motorvel, motor_cmd_pos, estCd(),
-                    estCd(), motorcurrent, batteryVoltage, axisError);
-
       // See if time for control (look at vertical vel)
       if (estVelocity() < VEL_CONTROL_START && estAltitude() > ALT_LANDED &&
           estAccel() < 0.0f) {
@@ -230,11 +221,6 @@ void stateUpdate() {
     case STATE_CONTROL:
       ledWrite(1.0f, 1.0f, 0.0f);  // Solid yellow
       debugPrintf("STATE: CONTROL\n");
-
-      // Log all data (GetOrientation called internally at 100Hz)
-      logFlightData(estAltitude(), estVelocity(), estBias(), estRawAccel(),
-                    estRawBaro(), motorpos, motorvel, motor_cmd_pos, estCd(),
-                    desiredCd, motorcurrent, batteryVoltage, axisError);
 
       controlUpdate();
 
@@ -247,9 +233,6 @@ void stateUpdate() {
     case STATE_DESCENT:
       ledWrite(1.0f, 1.0f, 1.0f);  // Solid white
       debugPrintf("STATE: DESCENT\n");
-      logFlightData(estAltitude(), estVelocity(), estBias(), estRawAccel(),
-                    estRawBaro(), motorpos, motorvel, motor_cmd_pos, estCd(),
-                    estCd(), motorcurrent, batteryVoltage, axisError);
       odrvPosition(MOTOR_MIN);  // Closed
 
       if (estAltitude() < ALT_LANDED) {
@@ -271,7 +254,6 @@ void stateUpdate() {
 
     case STATE_GROUND_TEST_RECORDING:
       ledWrite(0.0f, 0.5f, 0.5f);  // Solid cyan while log is active.
-      logCurrentSample();
       groundTestSweepUpdate();
       if ((uint32_t)(millis() - groundTestStartMs) >= GROUND_TEST_DURATION_MS) {
         odrvPosition(MOTOR_MIN);
@@ -306,7 +288,6 @@ void estimatorUpdate() {
       if (millis() - lastNonIdleTime > 10000) {
         // Idle vertical for 10s, go to PAD state
         currentState = STATE_PAD;
-        initFlash();          // Initialize flight data file
         lastNonIdleTime = 0;  // Reset for bias calibration
         resetPadLaunchTracking();
       }
@@ -320,9 +301,6 @@ void estimatorUpdate() {
         filterUpdate();
         break;
       }
-
-      // Enable odrive
-      EnableOdrv();
 
       // Calibrate bias (estimator updates PAD UI state internally)
       float acc = biasUpdate();
@@ -350,9 +328,9 @@ void estimatorUpdate() {
       break;
 
     case STATE_GROUND_TEST_ARMED: {
-      imu.update();
-      float accelMag = imu.getAccZ();
-      if (accelMag < 0.0f) accelMag = -accelMag;
+      // Keep calibrating while armed. This state can be entered directly from
+      // IDLE, bypassing PAD's normal stationary-bias calibration.
+      float accelMag = biasUpdate();
       if (accelMag >= GROUND_TEST_SHAKE_ACCEL) {
         filterReset();
         groundTestStartMs = millis();

@@ -5,7 +5,7 @@ Flight Data Manager for Airbrakes V3 Flight Computer
 Downloads binary flight data logged over LittleFS on the Pico 2 (RP2350)
 and converts it to CSV. Talks to the same serial command protocol
 implemented in src/flash.cpp (LIST / GET <n> / DELETE <n> / INFO), and
-unpacks the same 72-byte FlightRecord struct written there.
+unpacks the same 76-byte FlightRecord struct written there.
 
 Based on the flight data manager from Nv7's rock7
 (https://github.com/Nv7-GitHub/rock7), adapted for Airbrakes V3's USB
@@ -20,13 +20,13 @@ import time
 import struct
 from datetime import datetime
 
-# Binary record format (72 bytes): uint32_t time_ms, 15 floats
-# (altitude, velocity, accel_bias, raw_accel, raw_baro, motor_pos, motor_vel,
+# Binary record format (76 bytes): uint32_t time_ms, 16 floats
+# (altitude, velocity, accel_bias, raw_accel, vertical_accel, raw_baro, motor_pos, motor_vel,
 # motor_cmd_pos, roll, pitch, yaw, Cd, desired_Cd, motor_current,
 # battery_voltage),
 # uint32_t state, uint32_t axis_error.
 # Must match the FlightRecord struct in src/flash.cpp exactly.
-RECORD_FORMAT = '<I15fII'
+RECORD_FORMAT = '<I16fII'
 RECORD_SIZE = struct.calcsize(RECORD_FORMAT)
 
 # Matches platformio.ini's usb_manufacturer/usb_product for this board.
@@ -35,12 +35,13 @@ USB_PRODUCT = "Airbrakes V3"
 
 # CSV header must match the field order in RECORD_FORMAT above.
 CSV_HEADER = (
-    "time_ms,altitude_m,velocity_ms,accel_bias_ms2,raw_accel_ms2,raw_baro_m,"
+    "time_ms,altitude_m,velocity_ms,accel_bias_ms2,raw_accel_ms2,vertical_accel_ms2,raw_baro_m,"
     "motor_pos,motor_vel,motor_cmd_pos,roll_rad,pitch_rad,yaw_rad,"
     "Cd,desired_Cd,motor_current_A,battery_voltage_V,state,axis_error\n"
 )
 
-STATE_NAMES = ['IDLE', 'PAD', 'BOOST', 'CONTROL', 'DESCENT', 'LANDED']
+STATE_NAMES = ['IDLE', 'PAD', 'BOOST', 'CONTROL', 'DESCENT', 'LANDED',
+               'GROUND_TEST_ARMED', 'GROUND_TEST_RECORDING']
 
 
 def find_pico():
@@ -146,7 +147,8 @@ def download_flight(ser, flight_num, output_dir="flight_data", auto_delete=False
 
     print(f"Converting {num_records} records ({len(binary_data)} bytes)...")
     if remainder != 0:
-        print(f"Warning: Ignoring {remainder} trailing byte(s) that do not form a full record")
+        print(f"✗ Corrupt payload: {remainder} trailing byte(s) do not form a full record")
+        return None
 
     with open(output_file, 'w') as f:
         f.write(CSV_HEADER)
@@ -159,8 +161,8 @@ def download_flight(ser, flight_num, output_dir="flight_data", auto_delete=False
                 break
 
             try:
-                (time_ms, alt, vel, bias, raw_accel, raw_baro, motor_pos,
-                 motor_vel, motor_cmd_pos, roll, pitch, yaw, Cd, desired_Cd,
+                (time_ms, alt, vel, bias, raw_accel, vertical_accel, raw_baro,
+                 motor_pos, motor_vel, motor_cmd_pos, roll, pitch, yaw, Cd, desired_Cd,
                  motor_current, battery_voltage, state_val, axis_error) = struct.unpack(
                     RECORD_FORMAT, record_bytes)
 
@@ -169,7 +171,7 @@ def download_flight(ser, flight_num, output_dir="flight_data", auto_delete=False
                               else f'UNKNOWN({state_val})')
                 f.write(
                     f"{time_ms},{alt:.4f},{vel:.4f},{bias:.4f},"
-                    f"{raw_accel:.4f},{raw_baro:.4f},{motor_pos:.4f},"
+                    f"{raw_accel:.4f},{vertical_accel:.4f},{raw_baro:.4f},{motor_pos:.4f},"
                     f"{motor_vel:.4f},{motor_cmd_pos:.4f},{roll:.4f},"
                     f"{pitch:.4f},{yaw:.4f},{Cd:.4f},{desired_Cd:.4f},"
                     f"{motor_current:.4f},{battery_voltage:.4f},{state_name},{axis_error}\n"

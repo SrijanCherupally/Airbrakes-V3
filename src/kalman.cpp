@@ -48,6 +48,13 @@ void Kalman::setBias(float value) {
 void Kalman::predict() {
   getWorldAcceleration(worldAcc);
 
+  // Reject impossible/non-finite IMU values before they can poison the
+  // integrated altitude and velocity states.
+  if (!isfinite(worldAcc[2]) || fabsf(worldAcc[2]) > 200.0f) {
+    correctedAcceleration = 0.0f;
+    return;
+  }
+
   correctedAcceleration = worldAcc[2] - bias;
 
   float oldVelocity = velocity;
@@ -63,8 +70,17 @@ void Kalman::predict() {
 
 void Kalman::update() {
   float altitudeMeasurement = baro.getAltitudeM();
+  if (!isfinite(altitudeMeasurement) || fabsf(altitudeMeasurement) > 100000.0f ||
+      !isfinite(altitude) || !isfinite(velocity) || !isfinite(bias)) {
+    return;
+  }
 
   float error = altitudeMeasurement - altitude;
+  // A barometer frame jump is not physically plausible and must not be used
+  // to drag the integrated state into the 1e28-range values seen in logs.
+  if (!isfinite(error) || fabsf(error) > 1000.0f) {
+    return;
+  }
 
   float K = P[0][0] / (P[0][0] + R_altitude);
 

@@ -63,6 +63,8 @@ def plot_acceleration(df):
     fig, ax = _fig("Acceleration vs Time", "Time (s)", "Acceleration (m/s²)")
     t = df["time_ms"] / 1000.0
     ax.plot(t, df["raw_accel_ms2"], label="Raw accel", alpha=0.7)
+    if "vertical_accel_ms2" in df.columns:
+        ax.plot(t, df["vertical_accel_ms2"], label="Vertical accel (corrected)", alpha=0.9)
     ax.plot(t, df["accel_bias_ms2"], label="Accel bias", alpha=0.7)
     ax.legend(loc="best")
     return fig

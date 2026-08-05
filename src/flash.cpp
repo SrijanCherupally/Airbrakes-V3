@@ -5,13 +5,15 @@
 #include "orientation.h"
 #include "state.h"
 
-// Binary data structure (72 bytes per record)
+// Binary data structure (76 bytes per record).
+// Keep this layout synchronized with app/serial_link.py (<I16fII).
 struct __attribute__((packed)) FlightRecord {
   uint32_t time_ms;
   float altitude_m;
   float velocity_ms;
   float accel_bias_ms2;
   float raw_accel_ms2;
+  float vertical_accel_ms2;
   float raw_baro_m;
   float motor_pos;
   float motor_vel;
@@ -27,11 +29,14 @@ struct __attribute__((packed)) FlightRecord {
   uint32_t axis_error;
 };
 
-// RAM buffer for non-blocking writes
-#define BUFFER_SIZE 768  // 768 records = 52KB buffer (~7.7 seconds at 100Hz)
+// Single-producer (core 1 estimator), single-consumer (core 0 logger) queue.
+// Records are produced at 100 Hz, so this gives over 20 seconds of margin.
+#define BUFFER_SIZE 2048
+#define BUFFER_MASK (BUFFER_SIZE - 1)
 static FlightRecord writeBuffer[BUFFER_SIZE];
-static volatile int bufferHead = 0;
-static volatile int bufferTail = 0;
+static volatile uint16_t bufferHead = 0;
+static volatile uint16_t bufferTail = 0;
+static volatile uint32_t droppedSamples = 0;
 
 static File dataFile;
 static unsigned long logStartTime = 0;
@@ -39,6 +44,8 @@ static int flightNumber = 0;
 static String commandBuffer = "";
 static unsigned long lowStorageWarningStart = 0;
 static bool lowStorageWarningActive = false;
+static bool logWriteFault = false;
+static uint32_t lastFlushMs = 0;
 
 #define LOW_STORAGE_THRESHOLD (4 * 1024 * 1024)  // 4MB
 #define WARNING_DURATION 10000                   // 10 seconds
@@ -54,6 +61,15 @@ void initFlash() {
     }
     fsInitialized = true;
   }
+
+  // A new test/flight is a new producer session.  Do not let stale records
+  // from an aborted session be written into the next file.
+  if (dataFile) dataFile.close();
+  noInterrupts();
+  bufferHead = 0;
+  bufferTail = 0;
+  interrupts();
+  droppedSamples = 0;
 
   // Check storage
   FSInfo fs_info;
@@ -87,6 +103,8 @@ void initFlash() {
   // File will be created on first log entry (when STATE_BOOST/CONTROL/DESCENT
   // starts)
   logStartTime = 0;
+  logWriteFault = false;
+  lastFlushMs = 0;
 }
 
 bool checkStorageWarning() {
@@ -101,84 +119,99 @@ bool checkStorageWarning() {
 }
 
 void logFlightData(float altitude, float velocity, float accelBias,
-                   float rawAccel, float rawBaro, float motorPos,
+                   float rawAccel, float verticalAccel, float rawBaro, float motorPos,
                    float motorVel, float motorCmdPos, float Cd, float desiredCd,
                    float motorCurrent, float batteryVoltage, uint32_t axisError) {
-  // Create file on first log entry (lazy initialization)
-  if (!dataFile) {
-    if (!fsInitialized) return;  // Filesystem not ready
-
-    String filename = "/flight_" + String(flightNumber) + ".bin";
-    dataFile = LittleFS.open(filename, "w");
-
-    if (dataFile) {
-      Serial.print("Started logging to: ");
-      Serial.println(filename);
-    } else {
-      Serial.println("Failed to open file for writing");
-      return;
-    }
-  }
-
-  // Rate limit to 100Hz
-  static uint32_t lastLogTime = 0;
-  if (millis() - lastLogTime < 10) {  // 100Hz = 10ms period
+  // Capture only. This function may be called on core 1, so it must not open,
+  // write, or flush LittleFS. The core-0 loop drains the queue below.
+  uint16_t head = bufferHead;
+  uint16_t nextHead = (uint16_t)((head + 1u) & BUFFER_MASK);
+  if (nextHead == bufferTail) {
+    ++droppedSamples;
     return;
   }
-  lastLogTime = millis();
 
-  // Set log start time on first actual log entry (when STATE_BOOST starts)
-  if (logStartTime == 0) {
-    logStartTime = millis();
-  }
-
-  // Get orientation at 100Hz instead of every loop iteration
   float roll, pitch, yaw;
   GetOrientation(&roll, &pitch, &yaw);
 
-  // Add to RAM buffer (non-blocking)
-  int nextHead = (bufferHead + 1) % BUFFER_SIZE;
-  if (nextHead == bufferTail) {
-    // Buffer full - force flush now
-    flushLogBuffer();
-    // Try again after flush
-    nextHead = (bufferHead + 1) % BUFFER_SIZE;
-    if (nextHead == bufferTail) return;  // Still full, skip
-  }
-
-  writeBuffer[bufferHead].time_ms = millis() - logStartTime;
-  writeBuffer[bufferHead].altitude_m = altitude;
-  writeBuffer[bufferHead].velocity_ms = velocity;
-  writeBuffer[bufferHead].accel_bias_ms2 = accelBias;
-  writeBuffer[bufferHead].raw_accel_ms2 = rawAccel;
-  writeBuffer[bufferHead].raw_baro_m = rawBaro;
-  writeBuffer[bufferHead].motor_pos = motorPos;
-  writeBuffer[bufferHead].motor_vel = motorVel;
-  writeBuffer[bufferHead].motor_cmd_pos = motorCmdPos;
-  writeBuffer[bufferHead].roll_rad = roll;
-  writeBuffer[bufferHead].pitch_rad = pitch;
-  writeBuffer[bufferHead].yaw_rad = yaw;
-  writeBuffer[bufferHead].Cd = Cd;
-  writeBuffer[bufferHead].desired_Cd = desiredCd;
-  writeBuffer[bufferHead].motor_current = motorCurrent;
-  writeBuffer[bufferHead].battery_voltage = batteryVoltage;
-  writeBuffer[bufferHead].state = (uint32_t)currentState;
-  writeBuffer[bufferHead].axis_error = axisError;
-
+  writeBuffer[head].time_ms = millis();
+  writeBuffer[head].altitude_m = altitude;
+  writeBuffer[head].velocity_ms = velocity;
+  writeBuffer[head].accel_bias_ms2 = accelBias;
+  writeBuffer[head].raw_accel_ms2 = rawAccel;
+  writeBuffer[head].vertical_accel_ms2 = verticalAccel;
+  writeBuffer[head].raw_baro_m = rawBaro;
+  writeBuffer[head].motor_pos = motorPos;
+  writeBuffer[head].motor_vel = motorVel;
+  writeBuffer[head].motor_cmd_pos = motorCmdPos;
+  writeBuffer[head].roll_rad = roll;
+  writeBuffer[head].pitch_rad = pitch;
+  writeBuffer[head].yaw_rad = yaw;
+  writeBuffer[head].Cd = Cd;
+  writeBuffer[head].desired_Cd = desiredCd;
+  writeBuffer[head].motor_current = motorCurrent;
+  writeBuffer[head].battery_voltage = batteryVoltage;
+  writeBuffer[head].state = (uint32_t)currentState;
+  writeBuffer[head].axis_error = axisError;
+  __atomic_thread_fence(__ATOMIC_RELEASE);
   bufferHead = nextHead;
 }
 
-void flushLogBuffer() {
-  // Write buffered data to flash (call from main loop)
-  if (!dataFile) return;
+void serviceFlightLog() {
+  if (!fsInitialized || logWriteFault || bufferTail == bufferHead) return;
 
-  while (bufferTail != bufferHead) {
-    dataFile.write((uint8_t*)&writeBuffer[bufferTail], sizeof(FlightRecord));
-    bufferTail = (bufferTail + 1) % BUFFER_SIZE;
+  if (!dataFile) {
+    String filename = "/flight_" + String(flightNumber) + ".bin";
+    dataFile = LittleFS.open(filename, "w");
+    if (!dataFile) {
+      Serial.println("Failed to open file for writing");
+      return;
+    }
+    Serial.print("Started logging to: ");
+    Serial.println(filename);
   }
 
-  // Flush to disk so file size is accurate and data persists
-  dataFile.flush();
+  // Bound the work per main-loop pass so CAN servicing remains responsive.
+  int recordsWritten = 0;
+  while (bufferTail != bufferHead && recordsWritten < 32) {
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    FlightRecord& record = writeBuffer[bufferTail];
+    if (logStartTime == 0) logStartTime = record.time_ms;
+    uint32_t relativeTime = record.time_ms - logStartTime;
+    FlightRecord output = record;
+    output.time_ms = relativeTime;
+    size_t written = dataFile.write((uint8_t*)&output, sizeof(FlightRecord));
+    if (written != sizeof(FlightRecord)) {
+      logWriteFault = true;
+      Serial.println("FLASH:WRITE_ERROR: record not fully written");
+      return;
+    }
+    bufferTail = (uint16_t)((bufferTail + 1u) & BUFFER_MASK);
+    ++recordsWritten;
+  }
+  // Flush periodically rather than once for every service pass.  This keeps
+  // the core-0 loop responsive while still bounding loss after power failure.
+  uint32_t now = millis();
+  if (recordsWritten > 0 && (lastFlushMs == 0 ||
+      (uint32_t)(now - lastFlushMs) >= 100)) {
+    dataFile.flush();
+    lastFlushMs = now;
+  }
+}
+
+void flushLogBuffer() {
+  if (!fsInitialized) return;
+  if (logWriteFault) {
+    Serial.println("FLASH:FLUSH_ABORTED: previous write failed");
+    return;
+  }
+  // serviceFlightLog() can fail to open the file (for example, a full or
+  // unmounted filesystem). Never spin forever in a state transition.
+  if (bufferTail != bufferHead && !dataFile) {
+    serviceFlightLog();
+    if (!dataFile || logWriteFault) return;
+  }
+  while (bufferTail != bufferHead && !logWriteFault) serviceFlightLog();
 }
 
 void finalizeFlightLog() {

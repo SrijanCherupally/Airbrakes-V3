@@ -9,21 +9,21 @@ in [`README.md`](README.md); GUI-specific instructions belong in
 
 The RP2350 stores logs in the onboard LittleFS partition. Each flight is a
 file named `/flight_<N>.bin`; flight numbers are not reused. A file contains
-packed 72-byte `FlightRecord` values:
+76-byte `FlightRecord` values:
 
 | Field | Type |
 | --- | --- |
 | `time_ms` | `uint32_t` |
-| `altitude_m` through `battery_voltage` | 15 `float` values |
+| `altitude_m` through `battery_voltage` | 16 `float` values, including raw and corrected vertical acceleration |
 | `state`, `axis_error` | 2 × `uint32_t` |
 
-The Python struct format is `<I15fII`. The fields are defined in
+The Python struct format is `<I16fII`. The fields are defined in
 `src/flash.cpp` and must stay in the same order as `flight_data_manager.py`.
-The state values are `IDLE`, `PAD`, `BOOST`, `CONTROL`, `DESCENT`, and
-`LANDED`.
+The state values are `IDLE`, `PAD`, `BOOST`, `CONTROL`, `DESCENT`, `LANDED`,
+`GROUND_TEST_ARMED`, and `GROUND_TEST_RECORDING`.
 
-Logging is rate-limited to 100 Hz. Records are buffered in RAM in 768-record
-chunks (about 52 KB) and flushed from the main loop, keeping filesystem writes
+Logging is rate-limited to 100 Hz. Records are buffered in RAM in a 2048-record
+queue and flushed periodically from the main loop, keeping filesystem writes
 off the 500 Hz estimator path. The firmware warns when LittleFS has less than
 4 MB free. Check this with `INFO` before flight.
 

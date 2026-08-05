@@ -6,6 +6,9 @@
 #include "hardware.h"
 #include "kalman.h"
 #include "orientation.h"
+#include "flash.h"
+#include "state.h"
+#include "control.h"
 
 #define LOOPRATE 500  // Hz
 static const float dTest = 1.0f / (float)LOOPRATE;
@@ -16,6 +19,7 @@ static Kalman filter(1.0f / (float)LOOPRATE);
 static float gCd = BASE_CD;
 static float gRawBaro = 0.0f;
 static float gRawAccel = 0.0f;
+static float gVerticalAccel = 0.0f;
 static float gCalibratedBias = 0.0f;
 
 bool biasActive = true;
@@ -42,6 +46,7 @@ void filterReset() {
   gCd = BASE_CD;
   if (baro.isConnected()) gRawBaro = baro.getAltitudeM();
   gRawAccel = 0.0f;
+  gVerticalAccel = 0.0f;
 }
 
 float biasUpdate() {
@@ -94,6 +99,34 @@ void filterUpdate() {
   float worldAcceleration[3];
   getWorldAcceleration(worldAcceleration);
   gRawAccel = worldAcceleration[2];
+  // Match the acceleration used by Kalman::predict(), including the current
+  // bias estimate. This is the physically meaningful vertical acceleration
+  // for airbrake analysis, not merely the original pad calibration value.
+  gVerticalAccel = worldAcceleration[2] - filter.getBias();
+
+  if (!isfinite(gRawAccel) || !isfinite(gVerticalAccel) ||
+      fabsf(gRawAccel) > 200.0f || fabsf(gVerticalAccel) > 200.0f) {
+    gRawAccel = 0.0f;
+    gVerticalAccel = 0.0f;
+  }
+
+  // Capture every estimator sample for flight and ground-test analysis. The
+  // logger only copies into a RAM queue here; core 0 writes the queue to flash.
+  // Flash is deliberately sampled at 100 Hz.  Logging every 500 Hz estimator
+  // iteration made the producer faster than LittleFS/CAN servicing and caused
+  // queue overflow, which looked like a test that started seconds late.
+  static uint32_t lastLogMs = 0;
+  uint32_t nowMs = millis();
+  bool logDue = (lastLogMs == 0) || (uint32_t)(nowMs - lastLogMs) >= 10;
+  if (logDue && (currentState == STATE_GROUND_TEST_RECORDING ||
+      currentState == STATE_BOOST || currentState == STATE_CONTROL ||
+      currentState == STATE_DESCENT)) {
+    lastLogMs = nowMs;
+    logFlightData(estAltitude(), estVelocity(), estBias(), estRawAccel(),
+                  estVerticalAccel(), estRawBaro(), motorpos, motorvel,
+                  motor_cmd_pos, estCd(), desiredCd, motorcurrent,
+                  batteryVoltage, axisError);
+  }
 
   // Kalman prediction from world-frame vertical acceleration
   filter.predict();
@@ -115,7 +148,9 @@ void filterUpdate() {
   float vel = filter.getVelocity();
   if (accel < -G && fabsf(vel) > 1.0f) {
     float currCd = -(2.0f * MASS * (accel + G)) / (rhoA * vel * fabsf(vel));
-    gCd = (1.0f - alpha_cd) * gCd + alpha_cd * currCd;
+    if (isfinite(currCd) && currCd >= 0.0f && currCd < 10.0f) {
+      gCd = (1.0f - alpha_cd) * gCd + alpha_cd * currCd;
+    }
   }
 
   holdLoopRate(start);
@@ -137,11 +172,15 @@ float estAccel() {
 float estRawAccel() {
   return gRawAccel;
 }
+float estVerticalAccel() {
+  return gVerticalAccel;
+}
 float estBias() {
-  // The calibrated value is the actual pad calibration result.  Returning
-  // the filter state here hid calibration because the filter can be reset
-  // before it has received a barometer correction.
-  return gCalibratedBias;
+  // Log the bias that prediction actually subtracts. The Kalman barometer
+  // update can refine this after pad calibration; returning only
+  // gCalibratedBias made that evolving value appear to remain at zero.
+  float filterBias = filter.getBias();
+  return isfinite(filterBias) ? filterBias : 0.0f;
 }
 float estRawBaro() {
   return baro.isConnected() ? baro.getAltitudeM() : gRawBaro;

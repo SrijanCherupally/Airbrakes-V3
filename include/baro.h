@@ -39,6 +39,8 @@ class BARO {
   bool begin();
   bool update();
   bool isConnected();
+  bool hasValidSample() const;
+  void printDiagnostics() const;
 
   float getTemperatureC() const { return tempC; }
   float getPressurePa() const { return pressurePa; }
@@ -63,6 +65,11 @@ class BARO {
   float tempC = 0.0f, pressurePa = 0.0f, altitude_cm = 0.0f;
   uint8_t i2cAddress = DPS368_I2C_ADDR_HIGH;
   bool initialized = false;
+  uint32_t updateCount = 0;
+  uint32_t validSampleCount = 0;
+  uint32_t invalidSampleCount = 0;
+  uint8_t lastStatus = 0;
+  const char *lastError = "not started";
 
   bool init();
   bool selectAddress();

@@ -51,6 +51,8 @@ extern uint32_t axisError;
 void setupHardware();
 void updateBatteryVoltage();
 void ledWrite(float r, float g, float b);
+bool hardwarePreflightCheck();
+bool hardwarePreflightPassed();
 
 // ODrive helpers
 void EnableOdrv();
@@ -59,5 +61,8 @@ void serviceOdrive();
 bool odriveHeartbeatFresh();
 bool odriveReady();
 bool odriveCurrentLimitExceeded();
+uint32_t odriveRxFrameCount();
+uint32_t odriveTxFailureCount();
+uint32_t odriveTelemetryTimeoutCount();
 
 #endif  // HARDWARE_H

@@ -18,6 +18,84 @@ a closed-loop coefficient-of-drag controller.
 
 ## Quick start
 
+## Airbrakes setup and pre-flight procedure
+
+Follow this order every time. Do not treat unplugging and reflashing as a
+normal flight requirement; it can clear a transient USB, I2C, or power-state
+problem, but it does not prove that the barometer or wiring is reliable.
+
+### Exact USB-C and battery sequence
+
+The table below is the authoritative power sequence. “OFF” means physically
+disconnected, not merely switched off in software.
+
+| Step | USB-C | Flight battery | Action |
+| --- | --- | --- | --- |
+| 1. Inspect wiring | **Disconnected** | **Disconnected** | Check wiring and polarity with all power removed. |
+| 2. Connect for programming | **Connect** | **Disconnected** | Connect USB-C to the board and computer. Do not connect the battery. |
+| 3. Flash firmware | **Connected** | **Disconnected** | Build/upload with PlatformIO. If the board is externally powered, stop and disconnect the battery before continuing. |
+| 4. Open diagnostics | **Connected** | **Disconnected** | Open the 115200-baud serial monitor and press reset once. |
+| 5. Verify sensors | **Connected** | **Disconnected** | Confirm `DPS368 OK` and inspect `PREFLIGHT`. USB can power the Pico, IMU, and DPS368. `DPS368=OK` verifies the barometer; `ODRIVE=FAIL` is expected if the ODrive is unpowered. Do not launch unless the complete powered system later reports all required devices OK. |
+| 6. Ground test: sensors only | **Connected** | **Disconnected** | USB-only is sufficient for a stationary sensor/logging test, provided the ODrive is not expected to move. Use the app’s serial monitor to watch diagnostics and download the resulting log afterward. |
+| 7. Ground test: airbrake sweep | **Connected only if power design permits it** | **Connected if required by ODrive/motor** | The app can send the command over USB, but USB does not necessarily power the ODrive or motor. Use the battery/ODrive supply required by your wiring. Keep the mechanism restrained and follow the board’s power-design rules; never connect USB and battery together unless the hardware explicitly supports simultaneous connection. |
+| 8. End USB test | **Disconnect** | **Disconnect if it was connected** | Stop the monitor, abort/finish the test, disconnect USB-C, and wait a few seconds. |
+| 9. Battery-only boot | **Disconnected** | **Connect** | Connect the flight battery with correct polarity and allow the board to boot once. Do not reflash at this stage. |
+| 10. Flight installation | **Disconnected** | **Connected** | Keep USB-C disconnected while installing and launching. Arm only after the battery-only boot and hardware inspection pass. |
+| 11. After recovery | **Disconnected** | **Disconnect** | After landing, disconnect the battery before reconnecting USB-C or handling the board. |
+
+1. **Inspect hardware with all power disconnected.** Confirm DPS368 SDA is
+   GPIO4, SCL is GPIO5, 3.3 V and GND are connected, and the sensor board has
+   no loose or shorted jumper. The firmware probes DPS368 addresses `0x76` and
+   `0x77`.
+2. **Connect USB only** and flash the firmware. Close PlatformIO/serial monitor
+   programs that keep the port open after uploading.
+3. Open a monitor at **115200 baud**, reset the board once, and wait for:
+   `DPS368 OK, baseline pressure Pa: ...` and
+   `PREFLIGHT: ... DPS368=OK`. A valid baseline should be near local atmospheric
+   pressure (roughly 80,000–110,000 Pa), not zero.
+4. If DPS368 is `FAIL`, stop. Read the `DPS368_DIAG` line. `no DPS368 at
+   0x76 or 0x77` means wiring, power, pins, pull-ups, or the sensor board is
+   wrong; an invalid baseline points to a bad I2C read or sensor/calibration
+   problem. Do not launch with this warning.
+5. Start a sensor-only ground test only after the preflight output reports
+   `DPS368=OK`. With USB-only power, `ODRIVE=FAIL` can be expected because the
+   motor controller may be unpowered. For an airbrake sweep, provide the
+   separate ODrive/motor supply and verify ODrive readiness before starting.
+   Keep the board stationary for several seconds and verify the logged raw
+   barometer altitude is finite and changes smoothly when pressure is gently
+   applied/released near the sensor (do not blow moisture into it).
+6. **The serial preflight check requires USB.** Perform it while USB is still
+   connected and the battery is disconnected, because the serial monitor is how
+   you read `DPS368=OK` and `DPS368_DIAG`. After it passes, stop the serial
+   monitor, disconnect USB, connect the flight battery, and allow the board to
+   boot once before installation. The battery-only boot repeats the same
+   diagnostic internally, but its serial output cannot be read without a
+   telemetry link.
+   If the board has no documented LED fault code or other telemetry, you cannot
+   independently verify the barometer after disconnecting USB; do not assume
+   that it passed.
+7. Do not repeatedly reflash immediately before launch as a substitute for
+   finding a persistent `DPS368=FAIL` condition. If you need to power-cycle,
+   power down completely, wait a few seconds, then power the board once from
+   the battery and inspect the result over USB before proceeding.
+
+If a power cycle makes the barometer work, record that as evidence of a reset or
+power-sequencing issue and inspect the 3.3 V rail, I2C pull-ups, USB grounding,
+and sensor wiring before flight. A power cycle is not a guarantee of recovery.
+
+### What the app can and cannot do
+
+The app can select the serial port, flash firmware, reconnect after upload,
+show boot/preflight output, send `GROUND_TEST START/STATUS/ABORT`, and download
+the resulting log. It cannot provide power to the board or ODrive. USB power is
+normally enough for the Pico, IMU, DPS368, and a sensor-only test. An airbrake
+motion test requires whatever separate ODrive/motor supply the hardware wiring
+requires, even though the command is sent through USB. The app’s **Pre-flight
+check (INFO)** only checks the serial link and onboard storage; it does not
+perform the hardware sensor preflight. The actual sensor result is the
+firmware’s `PREFLIGHT`/`DPS368_DIAG` text in the live monitor. Do not interpret a
+successful `INFO` response as proof that the barometer works.
+
 ### Firmware
 
 Install PlatformIO (the VS Code extension or the standalone `pio` CLI), then:

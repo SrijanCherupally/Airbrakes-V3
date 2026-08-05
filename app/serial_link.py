@@ -3,7 +3,7 @@ Serial protocol client for the Airbrakes V3 flight computer.
 
 Mirrors the command set implemented in src/flash.cpp, including:
   LIST / CURRENT / GET <n> / DELETE <n> / INFO / GROUND_TEST ...
-    and the 72-byte FlightRecord binary layout (<I15fII).
+    and the 76-byte FlightRecord binary layout (<I16fII).
 
 This module is GUI-framework-agnostic: it does blocking I/O and reports
 progress via optional callbacks, so it's meant to be called from a
@@ -16,12 +16,12 @@ import time
 import serial
 import serial.tools.list_ports
 
-RECORD_FORMAT = "<I15fII"
-RECORD_SIZE = struct.calcsize(RECORD_FORMAT)  # 72 bytes
+RECORD_FORMAT = "<I16fII"
+RECORD_SIZE = struct.calcsize(RECORD_FORMAT)  # 76 bytes
 
 FIELD_NAMES = [
     "time_ms", "altitude_m", "velocity_ms", "accel_bias_ms2",
-    "raw_accel_ms2", "raw_baro_m", "motor_pos", "motor_vel",
+    "raw_accel_ms2", "vertical_accel_ms2", "raw_baro_m", "motor_pos", "motor_vel",
     "motor_cmd_pos", "roll_rad", "pitch_rad", "yaw_rad",
     "Cd", "desired_Cd", "motor_current", "battery_voltage", "state", "axis_error",
 ]
@@ -193,7 +193,7 @@ class FlightComputerLink:
     def download_flight(self, flight_num, progress_cb=None):
         """
         Downloads /flight_<n>.bin and returns a list of dict records
-        (already unpacked from the 72-byte binary format).
+        (already unpacked from the 76-byte binary format).
         progress_cb(bytes_received) is called periodically if given.
         """
         self._send(f"GET {flight_num}")
@@ -228,6 +228,15 @@ class FlightComputerLink:
         if not binary_data:
             raise FlightComputerError("No data received for that flight.")
 
+        remainder = len(binary_data) % RECORD_SIZE
+        if remainder:
+            # The protocol terminator is outside the binary payload. A
+            # remainder therefore indicates truncation/noise, not a partial
+            # record that should be silently accepted.
+            raise FlightComputerError(
+                f"Corrupt flight payload: {len(binary_data)} bytes is not a "
+                f"multiple of {RECORD_SIZE} ({remainder} trailing bytes)."
+            )
         num_records = len(binary_data) // RECORD_SIZE
         records = []
         for i in range(num_records):
