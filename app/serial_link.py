@@ -30,7 +30,7 @@ STATE_NAMES = ["IDLE", "PAD", "BOOST", "CONTROL", "DESCENT", "LANDED",
                "GROUND_TEST_ARMED", "GROUND_TEST_RECORDING"]
 
 USB_MANUFACTURER = "Srijan"
-USB_PRODUCT = "AIrbrakes V3"
+USB_PRODUCT = "Airbrakes V3"
 
 
 class FlightComputerError(Exception):
