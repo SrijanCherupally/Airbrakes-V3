@@ -1,433 +1,1913 @@
-"""Polished Airbrakes V3 ground-station interface."""
-import json, os, queue, threading, time, tkinter as tk
-from tkinter import filedialog, messagebox
-import customtkinter as ctk
-import coast_table_tool, data_store, firmware, serial_link
+"""
+Airbrakes V3 Ground Station — modernised UI.
 
-APP_DIR=os.path.join(os.path.expanduser("~"),".airbrakes_ground_station")
-APP_CONFIG_PATH=os.path.join(APP_DIR,"app_config.json")
-BG="#0a1017"; SIDEBAR="#101923"; SURFACE="#131e29"; SURFACE2="#192632"; FIELD="#202f3d"; HOVER="#2b4050"; CONSOLE="#08121b"; BORDER="#263847"; TEXT="#f1f7f5"; MUTED="#91a5ad"; SUBTLE="#657983"; TEAL="#48dfbb"; TEAL_DARK="#174b4c"; AMBER="#f6ca73"; RED="#f17f8b"; BLUE="#72b8ff"
-FONT="Segoe UI"; MONO="Cascadia Mono"
+DROP-IN REPLACEMENT for app/modern_window.py in the Airbrakes-V3 repo.
+All backend modules (serial_link, data_store, plotting, firmware,
+coast_table_tool, coast_lookup, config_editor) are completely untouched.
+
+Key improvements over the original
+-----------------------------------
+* Persistent page frames — pages are shown/hidden, never destroyed/rebuilt.
+* Auto-connect — daemon thread polls serial_link.find_board() every 2 s and
+  connects automatically when a board is found and no link is open.
+* Toast notification system — every single button fires a non-blocking
+  coloured status strip (ok / warn / error / info) that auto-dismisses.
+* Board page — animated progress, per-flight row delete, download-and-delete,
+  per-row selection highlight.
+* History page — two-panel layout:
+    Left  : scrollable flight list with per-row local delete, category badges.
+    Right : Stats | Plots | Data table tabs.
+      Plots     : all 7 plotting.ALL_PLOTS with NavigationToolbar2Tk
+                  (zoom / pan / save) embedded in-app.
+      Data table: full CSV viewer in-app (no Excel), scrollable, up to 2000
+                  rows shown, export button.
+* Larger fonts (28 px page titles / 13 px nav / 11 px body).
+* Bug-fix: removes the duplicate _activity() definition from the original.
+* Bug-fix: Ground test page no longer calls _postflight().
+* Bug-fix: port combo is cleared before every refresh.
+"""
+
+import csv as _csv
+import json
+import os
+import queue
+import shutil
+import threading
+import time
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
+import matplotlib
+
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import pandas as pd
+
+import coast_lookup
+import coast_table_tool
+import data_store
+import firmware
+import plotting
+import serial_link
+
+# ---------------------------------------------------------------------------
+# Config paths
+# ---------------------------------------------------------------------------
+APP_DIR = os.path.join(os.path.expanduser("~"), ".airbrakes_ground_station")
+APP_CONFIG_PATH = os.path.join(APP_DIR, "app_config.json")
+
+# ---------------------------------------------------------------------------
+# Design tokens — every colour lives here, nowhere else
+# ---------------------------------------------------------------------------
+BG        = "#080e14"
+SIDEBAR   = "#0d1520"
+SURFACE   = "#111d2a"
+SURFACE2  = "#172233"
+CARD      = "#1a2739"
+FIELD     = "#1f2f40"
+HOVER     = "#28405a"
+BORDER    = "#1e3045"
+CONSOLE   = "#060d14"
+
+TEXT      = "#e8f4f0"
+MUTED     = "#7b9aab"
+SUBTLE    = "#4d6878"
+
+TEAL      = "#3de0b5"
+TEAL_DIM  = "#0e4038"
+TEAL_MID  = "#1a5e52"
+AMBER     = "#f5c542"
+AMBER_DIM = "#3d2d08"
+RED       = "#f0697a"
+RED_DIM   = "#3d1520"
+BLUE      = "#5ea8f5"
+
+MONO = "Cascadia Mono" if os.name == "nt" else "Menlo"
+SANS = "Segoe UI"      if os.name == "nt" else "SF Pro Display"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def load_config():
     try:
-        with open(APP_CONFIG_PATH,encoding="utf-8") as f:return json.load(f)
-    except (OSError,ValueError):return {}
+        with open(APP_CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
 def save_config(v):
-    os.makedirs(APP_DIR,exist_ok=True)
-    with open(APP_CONFIG_PATH,"w",encoding="utf-8") as f:json.dump(v,f,indent=2)
+    os.makedirs(APP_DIR, exist_ok=True)
+    with open(APP_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(v, f, indent=2)
+
+
+def _run_bg(root, task, done):
+    """Run task() in a daemon thread; call done(result, error) on main thread."""
+    q: queue.Queue = queue.Queue()
+
+    def worker():
+        try:
+            q.put((task(), None))
+        except Exception as exc:          # noqa: BLE001
+            q.put((None, exc))
+
+    def poll():
+        try:
+            r, e = q.get_nowait()
+        except queue.Empty:
+            root.after(100, poll)
+            return
+        done(r, e)
+
+    threading.Thread(target=worker, daemon=True).start()
+    root.after(100, poll)
+
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
 
 class App(ctk.CTk):
+    # ------------------------------------------------------------------ init
     def __init__(self):
-        super().__init__(); ctk.set_appearance_mode("dark"); ctk.set_default_color_theme("dark-blue")
-        self.title("Airbrakes V3  ·  Ground Station"); self.geometry("1320x860"); self.minsize(1020,680); self.configure(fg_color=BG); self._dark_titlebar()
-        self.cfg=load_config(); self.repo_path=self.cfg.get("repo_path"); self.data_dir=self.cfg.get("data_dir",os.path.join(APP_DIR,"flight_data")); self.store=data_store.DataStore(self.data_dir)
-        self.link=None; self.process=None; self._monitor_job=None; self._monitor_paused=False; self._autoscroll=True; self._flights=[]; self._selected_flight=None; self._started=None; self._last_port=None; self._operation_running=False; self._page_generation=0
-        self._shell(); self._show_page("Pre-flight"); self.after(250,self._refresh_ports)
-        if not self.repo_path or not os.path.isdir(self.repo_path):self.after(400,self._choose_repo)
+        super().__init__()
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("dark-blue")
+
+        self.title("Airbrakes V3  ·  Ground Station")
+        self.geometry("1380x900")
+        self.minsize(1050, 700)
+        self.configure(fg_color=BG)
+        self._dark_titlebar()
+
+        # App state
+        self.cfg          = load_config()
+        self.repo_path    = self.cfg.get("repo_path")
+        self.data_dir     = self.cfg.get("data_dir", os.path.join(APP_DIR, "flight_data"))
+        self.store        = data_store.DataStore(self.data_dir)
+        self.link         = None            # FlightComputerLink or None
+        self._last_port   = None
+        self._monitor_job = None
+        self._monitor_paused = False
+        self._autoscroll  = True
+        self._op_running  = False
+        self._flights_on_board = []
+        self._selected_flight_idx = None
+        self._coast_table_cache = None
+        self._history_entries = []
+        self._selected_history_entry = None
+        self._auto_connect_enabled = True
+        self._auto_connect_job = None
+        self._pages = {}                    # name -> CTkFrame
+
+        # Build chrome (sidebar + content shell) then all pages
+        self._build_chrome()
+        self._show_page("Board")
+
+        # Kick off auto-scan after the window is visible
+        self.after(800, self._auto_connect_tick)
+
+        if not self.repo_path or not os.path.isdir(self.repo_path):
+            self.after(600, self._choose_repo_prompt)
+
+    # ------------------------------------------------------------------ OS
     def _dark_titlebar(self):
-        if os.name=="nt":
+        if os.name == "nt":
             try:
-                import ctypes; v=ctypes.c_int(1); ctypes.windll.dwmapi.DwmSetWindowAttribute(self.winfo_id(),20,ctypes.byref(v),ctypes.sizeof(v))
-            except Exception:pass
-    def label(self,p,t,c=TEXT,s=12,w="normal",**kw):return ctk.CTkLabel(p,text=t,text_color=c,font=ctk.CTkFont(family=FONT,size=s,weight=w),**kw)
-    def card(self,p=None):return ctk.CTkFrame(p or self.workspace,fg_color=SURFACE,bg_color=BG,border_color=BORDER,border_width=1,corner_radius=20)
-    def button(self,p,t,cmd,kind="secondary",**kw):
-        fg,ho,tc={"primary":(TEAL,"#32c9a6","#081713"),"secondary":(FIELD,HOVER,TEXT),"quiet":("transparent",FIELD,MUTED),"danger":("#482832","#63333f",RED)}[kind]
-        # Let compact controls (status-bar Dismiss/Clear buttons) override
-        # the normal 38px action height without passing duplicate kwargs.
-        height=kw.pop("height",38)
-        return ctk.CTkButton(p,text=t,command=cmd,height=height,corner_radius=12,fg_color=fg,hover_color=ho,text_color=tc,font=ctk.CTkFont(family=FONT,size=12,weight="bold"),**kw)
-    def pill(self,p,t,c=TEAL):return ctk.CTkLabel(p,text=t,text_color=c,fg_color=TEAL_DARK if c==TEAL else "#402633",corner_radius=9,padx=8,pady=3,font=ctk.CTkFont(family=FONT,size=9,weight="bold"))
-    def _shell(self):
-        self.grid_columnconfigure(1,weight=1); self.grid_rowconfigure(0,weight=1); self.grid_rowconfigure(1,weight=0); self._sidebar()
-        self.workspace=ctk.CTkScrollableFrame(self,fg_color=BG,bg_color=BG,scrollbar_fg_color=BG,scrollbar_button_color=FIELD,scrollbar_button_hover_color=HOVER,corner_radius=0); self.workspace.grid(row=0,column=1,sticky="nsew",padx=(0,30),pady=(24,10)); self.workspace.grid_columnconfigure(0,weight=1)
-        self._global_status()
-    def _global_status(self):
-        self.status_host=ctk.CTkFrame(self,fg_color=BG,bg_color=BG,corner_radius=0)
-        self.status_host.grid(row=1,column=1,sticky="ew",padx=(0,30),pady=(0,18));self.status_host.grid_columnconfigure(1,weight=1);self.status_host.grid_remove()
-        self.status_accent=ctk.CTkFrame(self.status_host,width=5,fg_color=TEAL,bg_color=BG,corner_radius=3);self.status_accent.grid(row=0,column=0,sticky="ns",padx=(0,12),pady=2)
-        body=ctk.CTkFrame(self.status_host,fg_color=SURFACE,bg_color=BG,border_color=BORDER,border_width=1,corner_radius=15);body.grid(row=0,column=1,sticky="ew");body.grid_columnconfigure(1,weight=1)
-        self.status_title=self.label(body,"",TEXT,12,"bold");self.status_title.grid(row=0,column=0,sticky="w",padx=(14,6),pady=(10,0))
-        self.status_detail=self.label(body,"",MUTED,10,anchor="w");self.status_detail.grid(row=1,column=0,columnspan=2,sticky="ew",padx=14,pady=(2,10))
-        self.status_progress=ctk.CTkProgressBar(body,height=6,corner_radius=3,fg_color=FIELD,progress_color=TEAL);self.status_progress.grid(row=0,column=1,sticky="ew",padx=(8,14),pady=(10,0));self.status_progress.grid_remove()
-        self.status_close=self.button(body,"Dismiss",self._dismiss_global_status,"quiet",height=26,width=70);self.status_close.grid(row=0,column=2,rowspan=2,padx=(0,12));self.status_close.grid_remove()
-        self._status_hide_job=None
-    def _show_global_status(self,title,detail="",running=True,ok=True):
-        if not hasattr(self,"status_host"):return
-        if self._status_hide_job:
-            try:self.after_cancel(self._status_hide_job)
-            except tk.TclError:pass
-            self._status_hide_job=None
-        self.status_host.grid();self.status_title.configure(text=title);self.status_detail.configure(text=detail)
-        self.status_accent.configure(fg_color=TEAL if ok else RED)
-        if running:
-            self.status_progress.configure(mode="indeterminate");self.status_progress.start();self.status_progress.grid();self.status_close.grid_remove()
-        else:
-            self.status_progress.stop();self.status_progress.configure(mode="determinate");self.status_progress.set(1 if ok else 0);self.status_progress.grid();self.status_close.grid();self._status_hide_job=self.after(5000,self._dismiss_global_status)
-    def _dismiss_global_status(self):
-        if hasattr(self,"status_progress"):self.status_progress.stop()
-        if hasattr(self,"status_host"):self.status_host.grid_remove()
-        self._status_hide_job=None
-    def _sidebar(self):
-        self.sidebar=ctk.CTkFrame(self,width=244,fg_color=SIDEBAR,bg_color=BG,corner_radius=0); self.sidebar.grid(row=0,column=0,sticky="nsew"); self.sidebar.grid_propagate(False)
-        b=ctk.CTkFrame(self.sidebar,fg_color="transparent",bg_color=SIDEBAR); b.pack(fill="x",padx=24,pady=(30,34)); m=ctk.CTkFrame(b,width=38,height=38,fg_color=TEAL_DARK,bg_color=SIDEBAR,corner_radius=12);m.pack(side="left",padx=(0,12));m.pack_propagate(False);self.label(m,"A",TEAL,20,"bold").place(relx=.5,rely=.48,anchor="center"); self.label(b,"AIRBRAKES",TEAL,18,"bold").pack(anchor="w");self.label(b,"V3  /  GROUND STATION",SUBTLE,9,"bold").pack(anchor="w")
-        self.nav={}
-        for n,g in (("Pre-flight","◈"),("Board","⌁"),("Ground test","⚙"),("History","◷")):
-            x=ctk.CTkButton(self.sidebar,text=f"  {g}   {n}",anchor="w",height=46,corner_radius=13,fg_color="transparent",bg_color=SIDEBAR,hover_color=FIELD,text_color=MUTED,font=ctk.CTkFont(family=FONT,size=13,weight="bold"),command=lambda z=n:self._show_page(z));x.pack(fill="x",padx=14,pady=3);self.nav[n]=x
-        ctk.CTkFrame(self.sidebar,height=1,fg_color=BORDER,bg_color=SIDEBAR).pack(fill="x",padx=24,pady=30);self.label(self.sidebar,"BOARD LINK",SUBTLE,9,"bold").pack(anchor="w",padx=26)
-        q=ctk.CTkFrame(self.sidebar,fg_color=SURFACE,bg_color=SIDEBAR,corner_radius=12);q.pack(fill="x",padx=20,pady=(9,8));self.connection=self.label(q,"●  OFFLINE",RED,11,"bold");self.connection.pack(anchor="w",padx=13,pady=10);self.side_hint=self.label(self.sidebar,"Connect from the Board\npage to get started.",MUTED,11,justify="left");self.side_hint.pack(anchor="w",padx=26)
-    def _show_page(self,n):
-        self._page_generation+=1
-        self.workspace.grid_remove()
-        for x in self.workspace.winfo_children():x.destroy()
-        for k,v in self.nav.items():v.configure(fg_color=TEAL_DARK if k==n else "transparent",text_color=TEXT if k==n else MUTED)
-        {"Pre-flight":self._preflight,"Board":self._board,"Ground test":self._ground_test_page,"History":self._history}[n]()
-        self.update_idletasks();self.workspace.grid()
+                import ctypes
+                v = ctypes.c_int(1)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    self.winfo_id(), 20, ctypes.byref(v), ctypes.sizeof(v))
+            except Exception:
+                pass
 
-    def _board(self):
-        """Dedicated home for the connection and onboard file controls."""
-        self._postflight()
+    # ================================================================== Chrome
+    def _build_chrome(self):
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self._build_sidebar()
 
-    def _ground_test_page(self):
-        """Dedicated ground-test page; connection remains available globally."""
-        self._postflight()
-        if hasattr(self, "flight_card"):
-            self.flight_card.grid_remove()
-            self._log("Ground-test controls are below the board connection.")
+        # Content area
+        self.content = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        self.content.grid(row=0, column=1, sticky="nsew")
+        self.content.grid_columnconfigure(0, weight=1)
+        self.content.grid_rowconfigure(0, weight=1)
 
-    def _history_row(self, parent, entry, row, color, label):
-        box = ctk.CTkFrame(parent, fg_color=FIELD, bg_color=SURFACE, corner_radius=12)
-        box.grid(row=row, column=0, columnspan=2, sticky="ew", padx=20, pady=4)
-        self.label(box, f"{label} {entry['flight_num']:04d}", color, 11, "bold").pack(side="left", padx=14, pady=12)
-        self.label(box, f"{entry.get('downloaded_at', '?')}  ·  {entry.get('duration_s', 0):.1f}s", MUTED, 10).pack(side="left", padx=8)
-        self.button(box, "Delete", lambda e=entry: self._delete_local(e), "danger", height=28, width=76).pack(side="right", padx=10)
+        # Toast overlay — built once, shown/hidden via place()
+        self._toast_frame = ctk.CTkFrame(
+            self.content, fg_color=TEAL_DIM, corner_radius=12,
+            border_color=TEAL_MID, border_width=1)
+        self._toast_label = ctk.CTkLabel(
+            self._toast_frame, text="", text_color=TEAL,
+            font=ctk.CTkFont(family=SANS, size=12, weight="bold"),
+            wraplength=520, anchor="w")
+        self._toast_label.pack(padx=16, pady=10)
+        self._toast_visible = False
+        self._toast_job = None
 
-    def _delete_local(self, entry):
-        if messagebox.askyesno("Delete local data", f"Delete {entry.get('folder')} from this computer?"):
-            self.store.delete_local(entry["folder"])
-            self._show_page("History")
+        # Build all pages upfront so they exist for the lifetime of the app
+        self._build_board_page()
+        self._build_preflight_page()
+        self._build_ground_test_page()
+        self._build_history_page()
 
-    def _delete_all_local(self):
-        if messagebox.askyesno("Delete all local data", "Delete every saved flight and ground test from this computer? This does not affect the board."):
-            self.store.delete_all_local()
-            self._show_page("History")
-    def title_block(self,e,t,s):self.label(self.workspace,e.upper(),TEAL,10,"bold").grid(row=0,column=0,sticky="w",padx=10);self.label(self.workspace,t,TEXT,30,"bold").grid(row=1,column=0,sticky="w",padx=10,pady=(4,0));self.label(self.workspace,s,MUTED,12).grid(row=2,column=0,sticky="w",padx=10,pady=(4,24))
-    def _activity(self,p,row):
-        a=ctk.CTkFrame(p,fg_color=SURFACE2,bg_color=SURFACE,border_color=BORDER,border_width=1,corner_radius=18);a.grid(row=row,column=0,columnspan=3,sticky="ew",padx=20,pady=(0,20));a.grid_columnconfigure(0,weight=1);h=ctk.CTkFrame(a,fg_color="transparent",bg_color=SURFACE2);h.grid(row=0,column=0,sticky="ew",padx=18,pady=(15,0));self.label(h,"LIVE ACTIVITY",TEAL,9,"bold").pack(side="left");self.activity=self.label(h,"Standing by",TEXT,12,"bold");self.activity.pack(side="right");self.detail=self.label(a,"Your next operation will appear here",MUTED,10);self.detail.grid(row=1,column=0,sticky="w",padx=18,pady=(5,0));self.progress=ctk.CTkProgressBar(a,height=9,corner_radius=5,fg_color=FIELD,progress_color=TEAL);self.progress.grid(row=2,column=0,sticky="ew",padx=18,pady=12);self.progress.set(0);f=ctk.CTkFrame(a,fg_color="transparent",bg_color=SURFACE2);f.grid(row=3,column=0,sticky="ew",padx=18,pady=(0,13));self.percent=self.label(f,"0%",SUBTLE,10,"bold");self.percent.pack(side="left");self.clock=self.label(f,"",SUBTLE,10);self.clock.pack(side="right");self.details=self.button(f,"▸  Details",self._toggle_log,"quiet",height=27,width=100);self.details.pack(side="right",padx=(0,12));self.clear_details=self.button(f,"Clear",self._clear_log,"quiet",height=27,width=65);self.clear_details.pack(side="right",padx=(0,8));self.log=ctk.CTkTextbox(a,height=125,corner_radius=13,bg_color=SURFACE2,fg_color=CONSOLE,border_color=BORDER,border_width=1,text_color="#bcebdc",font=ctk.CTkFont(family=MONO,size=10),wrap="none");self.log.grid(row=4,column=0,sticky="ew",padx=18,pady=(0,14));self.log.grid_remove();self.log.configure(state="disabled")
-    def _toggle_log(self):
-        if self.log.winfo_ismapped():self.log.grid_remove();self.details.configure(text="▸  Details")
-        else:self.log.grid();self.details.configure(text="▾  Details")
-    def _log(self,s):
-        try:
-            if hasattr(self,"log") and self.log.winfo_exists():self.log.configure(state="normal");self.log.insert("end",s+"\n");self.log.see("end");self.log.configure(state="disabled")
-            if hasattr(self,"event_status") and self.event_status.winfo_exists():self.event_status.configure(text=str(s)[:180])
-        except tk.TclError:
-            pass
-    def _clear_log(self):
-        if hasattr(self,"log"):
-            self.log.configure(state="normal");self.log.delete("1.0","end");self.log.configure(state="disabled")
-    def _activity(self,s,running=False):
-        self._operation_running=running
-        if not hasattr(self,"activity") or not self.activity.winfo_exists():return
-        self.activity.configure(text=s);self._started=time.monotonic() if running else None
-        if running:self.progress.configure(mode="indeterminate");self.progress.start();self.percent.configure(text="Working");self.clock.configure(text="Live");self.detail.configure(text="Processing in the background — open Details for technical output")
-        else:self.progress.stop();self.progress.configure(mode="determinate");ok="failed" not in s.lower() and "error" not in s.lower();self.progress.set(1 if ok else 0);self.percent.configure(text="Complete" if ok else "Needs attention");self.clock.configure(text="Finished");self.detail.configure(text="Operation finished" if ok else "Open Details for more information")
-    def _preflight(self):
-        self.title_block("Operations","Pre-flight workspace","Prepare the vehicle, generate its flight model, then build or flash when ready.");c=self.card();c.grid(row=3,column=0,sticky="ew",padx=10,pady=8);c.grid_columnconfigure(1,weight=1);self.label(c,"Vehicle setup",TEXT,17,"bold").grid(row=0,column=0,sticky="w",padx=20,pady=(19,2));self.repo_label=self.label(c,self.repo_path or "Choose a repository folder",MUTED,11,anchor="w");self.repo_label.grid(row=1,column=0,columnspan=2,sticky="ew",padx=20,pady=(0,15));self.button(c,"Choose repository",self._choose_repo,width=154).grid(row=1,column=2,padx=20,pady=(0,15));self.mass=self._field(c,"Rocket mass","mass_kg","kg",2);self.temp=self._field(c,"Temperature","temp_f","°F",3);self.humidity=self._field(c,"Humidity","humidity_pct","%",4);self.pressure=self._field(c,"Pressure","pressure_hpa","hPa",5);self.button(c,"Generate coast table",self._run_coast,"primary").grid(row=6,column=0,columnspan=3,sticky="ew",padx=20,pady=(12,20));self._load_conditions();a=self.card();a.grid(row=4,column=0,sticky="ew",padx=10,pady=8);self.label(a,"Firmware actions",TEXT,17,"bold").pack(anchor="w",padx=20,pady=(19,2));self.label(a,"Build and flash run quietly in the background. Technical output is available only when needed.",MUTED,11).pack(anchor="w",padx=20);r=ctk.CTkFrame(a,fg_color="transparent",bg_color=SURFACE);r.pack(fill="x",padx=20,pady=16);self.button(r,"Build firmware",self._run_build).pack(side="left",padx=(0,9));self.button(r,"Flash to board",self._run_upload,"primary").pack(side="left",padx=(0,9));self.button(r,"Pre-flight check",self._preflight_check).pack(side="left");self._activity(a,3)
-    def _field(self,p,l,k,u,row):self.label(p,l,MUTED,11).grid(row=row,column=0,sticky="w",padx=20,pady=5);e=ctk.CTkEntry(p,height=36,corner_radius=10,bg_color=SURFACE,fg_color=FIELD,border_width=1,border_color=BORDER);e.grid(row=row,column=1,sticky="ew",padx=(20,8),pady=5);setattr(self,k,e);self.label(p,u,SUBTLE,10).grid(row=row,column=2,sticky="w",padx=(0,20));return e
-    def _load_conditions(self):
-        d=self.cfg.get("last_launch_conditions",{});
-        for e,k in ((self.mass,"mass_kg"),(self.temp,"temp_f"),(self.humidity,"humidity_pct"),(self.pressure,"pressure_hpa")):e.insert(0,str(d.get(k,"")))
-    def _choose_repo(self):
-        p=filedialog.askdirectory(title="Select Airbrakes V3 repository")
-        if p:self.repo_path=p;self.cfg["repo_path"]=p;save_config(self.cfg);self.repo_label.configure(text=p)
-    def _run_coast(self):
-        try:v=[float(x.get()) for x in (self.mass,self.temp,self.humidity,self.pressure)]
-        except ValueError:return messagebox.showerror("Invalid values","All launch-condition fields must be numbers.")
-        self._activity("Generating coast table",True);self._show_global_status("Generating coast table","Validating launch conditions and preparing simulation …",True);self._log("Preparing coast table inputs …")
-        def on_line(line):
-            self.after(0,lambda:self._line(line))
-        self._async(lambda:coast_table_tool.regenerate(self.repo_path,*v,on_line=on_line),lambda r,e:self._done("Coast table generated successfully",e,summary=r))
-    def _run_build(self):self._process(firmware.build_firmware,"Building firmware")
-    def _run_upload(self):self._process(firmware.upload_firmware,"Flashing firmware")
-    def _process(self,fac,name):
-        if self._operation_running:return messagebox.showinfo("Operation in progress","Finish the current operation before starting another one.")
-        if not self.repo_path:return messagebox.showwarning("Repository needed","Choose the repository first.")
-        if not firmware.check_platformio_installed():return messagebox.showerror("PlatformIO unavailable","Install PlatformIO, then try again.")
-        reconnect_port=self._last_port if name.startswith("Flashing") else None
-        if reconnect_port and self.link:
-            self._log("Closing the board connection so PlatformIO can reboot and claim the USB port …")
-            self.link.close();self.link=None
-            if hasattr(self,"connection") and self.connection.winfo_exists():self.connection.configure(text="●  FLASHING",text_color=AMBER)
-            if hasattr(self,"side_hint") and self.side_hint.winfo_exists():self.side_hint.configure(text="Serial link released for upload.\nPlatformIO owns the port.")
-        self._activity(name,True);self._show_global_status(name,"Starting PlatformIO and waiting for live output …",True);self._log("Starting "+name.lower()+" …")
-        def finished(code):
-            def finish_ui():
-                self._done(name+(" completed successfully" if code==0 else " failed"),None if code==0 else RuntimeError(f"exit code {code}"))
-                if reconnect_port:
-                    self._log("Upload finished — waiting for the board to reboot …")
-                    self._reconnect_after_upload(reconnect_port,attempt=0)
-            self.after(0,finish_ui)
-        self.process=fac(self.repo_path,on_line=lambda x:self.after(0,lambda:self._line(x)),on_exit=finished)
-    def _line(self,x):
-        self._log(x);l=x.lower()
-        if self._operation_running:
-            stage="Uploading firmware" if "upload" in l or "firmware.bin" in l else "Linking firmware" if "link" in l else "Compiling source" if "compile" in l or "building" in l else "Writing generated files" if "saved" in l or "coast_table" in l or "config.h" in l else "Reading PlatformIO output"
-            self._show_global_status(self.activity.cget("text") if hasattr(self,"activity") and self.activity.winfo_exists() else "Operation in progress",stage+": "+str(x)[:130],True)
-        try:
-            if hasattr(self,"detail") and self.detail.winfo_exists():self.detail.configure(text="Attention required" if "error" in l or "failed" in l else "Uploading firmware" if "upload" in l else "Linking firmware" if "link" in l else "Compiling firmware" if "compile" in l else "Generating coast table" if "progress:" in l else "Writing generated files" if "saved" in l else self.detail.cget("text"))
-        except tk.TclError:
-            pass
-    def _preflight_check(self):
-        if self._operation_running:return messagebox.showinfo("Operation in progress","Finish the current operation before starting another one.")
-        port=self._last_port
-        if not self.link and not port:return messagebox.showinfo("Connect a board","Connect from Post-flight first, then run this check again.")
-        self._activity("Checking board",True);self._show_global_status("Pre-flight check","Verifying serial link and requesting board storage information …",True);self._log("Sending INFO request to the flight computer …")
-        if self.link:
-            self._monitor_paused=True;self._async(self.link.get_info,lambda r,e:self._preflight_done(r,e,False))
-        else:
-            def open_and_check():
-                temporary_link=serial_link.FlightComputerLink(port)
-                try:
-                    return temporary_link,temporary_link.get_info()
-                except Exception:
-                    temporary_link.close()
-                    raise
-            self._async(open_and_check,lambda r,e:self._preflight_done(r,e,True))
-    def _preflight_done(self,result,error,temporary):
-        if error:
-            self._monitor_paused=False;self._done("Pre-flight check failed",error);return
-        if temporary:
-            self.link,info=result
-            self._last_port=self._last_port or self._selected_port()
-            summary=info
-        else:
-            summary=result
-        self._monitor_paused=False;self._done("Pre-flight check passed",None,summary=summary)
-        if hasattr(self,"connection") and self.connection.winfo_exists():self.connection.configure(text="●  CONNECTED",text_color=TEAL)
-        if hasattr(self,"side_hint") and self.side_hint.winfo_exists():self.side_hint.configure(text=f"Connected on {self._last_port or 'selected port'}\nBoard verified.")
-    def _done(self,msg,e,summary=None):
-        self._activity(msg if not e else str(e),False);self._log(msg if not e else "Error: "+str(e))
-        if summary and not e:self._log("Result: "+str(summary))
-        self._show_global_status(msg,"Result: "+str(summary)[:170] if summary and not e else (str(e) if e else "Operation finished successfully"),False,not bool(e))
-    def _async(self,task,done):
-        q=queue.Queue()
-        def w():
-            try:q.put((task(),None))
-            except Exception as e:q.put((None,e))
-        threading.Thread(target=w,daemon=True).start()
-        def poll():
-            try:r,e=q.get_nowait()
-            except queue.Empty:self.after(100,poll);return
-            done(r,e)
-        self.after(100,poll)
-    def _postflight(self):
-        self.title_block("Telemetry", "Post-flight workspace", "One clear home for the board connection, stored flights, and live output.")
-        c=self.card(); c.grid(row=3,column=0,sticky="ew",padx=10,pady=8); c.grid_columnconfigure(0,weight=1)
-        self.label(c,"Board connection",TEXT,17,"bold").grid(row=0,column=0,sticky="w",padx=20,pady=(19,12))
-        self.port_var=tk.StringVar(); self.port_combo=ctk.CTkComboBox(c,variable=self.port_var,height=38,corner_radius=10,bg_color=SURFACE,fg_color=FIELD,border_width=1,border_color=BORDER,values=[]); self.port_combo.grid(row=1,column=0,sticky="ew",padx=20,pady=(0,12))
-        r=ctk.CTkFrame(c,fg_color="transparent",bg_color=SURFACE); r.grid(row=2,column=0,sticky="w",padx=20,pady=(0,10)); self.refresh_button=self.button(r,"Refresh ports",self._refresh_ports).pack(side="left",padx=(0,8)); self.connect_button=self.button(r,"Connect",self._connect,"primary"); self.connect_button.pack(side="left",padx=(0,8)); self.disconnect_button=self.button(r,"Disconnect",self._disconnect); self.disconnect_button.pack(side="left")
-        self.connection_progress=ctk.CTkProgressBar(c,height=7,corner_radius=4,fg_color=FIELD,progress_color=TEAL,mode="indeterminate");self.connection_progress.grid(row=3,column=0,sticky="ew",padx=20,pady=(0,6));self.connection_progress.grid_remove()
-        self.event_status=self.label(c,"Ready — choose a port to connect.",MUTED,10);self.event_status.grid(row=4,column=0,sticky="w",padx=20,pady=(0,16))
-        f=self.card(); f.grid(row=5,column=0,sticky="ew",padx=10,pady=8); f.grid_columnconfigure(0,weight=1); self.flight_card=f
-        self.label(f,"Stored flights",TEXT,17,"bold").grid(row=0,column=0,sticky="w",padx=20,pady=(19,2)); self.flight_status=self.label(f,"Connect to view flights",MUTED,11); self.flight_status.grid(row=1,column=0,sticky="w",padx=20)
-        self.flight_list=ctk.CTkFrame(f,fg_color="transparent",bg_color=SURFACE); self.flight_list.grid(row=2,column=0,sticky="ew",padx=14,pady=10)
-        r=ctk.CTkFrame(f,fg_color="transparent",bg_color=SURFACE); r.grid(row=3,column=0,sticky="w",padx=20,pady=(0,19)); self.button(r,"List flights",self._list_flights).pack(side="left",padx=(0,8)); self.button(r,"Download selected",self._download).pack(side="left",padx=(0,8)); self.button(r,"Download all",self._download_all,"primary").pack(side="left")
-        t=self.card();t.grid(row=6,column=0,sticky="ew",padx=10,pady=8);self.label(t,"Ground test",TEXT,17,"bold").pack(anchor="w",padx=20,pady=(17,2));self.label(t,"Arms an opt-in shake-triggered 15 s sensor log and a slow close → open → close airbrake sweep. Keep clear of the mechanism.",MUTED,10,wraplength=800,justify="left").pack(anchor="w",padx=20);tr=ctk.CTkFrame(t,fg_color="transparent",bg_color=SURFACE);tr.pack(anchor="w",padx=20,pady=(10,4));self.button(tr,"Arm ground test",self._ground_test_start,"primary").pack(side="left",padx=(0,8));self.button(tr,"Abort / close brakes",self._ground_test_abort).pack(side="left",padx=(0,8));self.button(tr,"Check status",self._ground_test_status).pack(side="left");self.button(tr,"Check DPS368",self._baro_status,"quiet").pack(side="left",padx=(8,0));self.ground_test_status=self.label(t,"Connect to arm a test.",MUTED,10);self.ground_test_status.pack(anchor="w",padx=20,pady=(0,17))
-        activity=self.card();activity.grid(row=7,column=0,sticky="ew",padx=10,pady=8)
-        self.label(activity,"Operation status",TEXT,17,"bold").pack(anchor="w",padx=20,pady=(17,0))
-        self._activity(activity,1)
-        self._monitor()
-        if self.link and self._monitor_job is None:self._monitor_job=self.after(100,self._poll_monitor)
-    def _monitor(self):
-        m=self.card();m.grid(row=8,column=0,sticky="ew",padx=10,pady=8);m.grid_columnconfigure(0,weight=1);h=ctk.CTkFrame(m,fg_color="transparent",bg_color=SURFACE);h.grid(row=0,column=0,sticky="ew",padx=20,pady=(17,0));self.label(h,"Live serial monitor",TEXT,17,"bold").pack(side="left");self.monitor_status=self.label(h,"●  Waiting for board",MUTED,10,"bold");self.monitor_status.pack(side="right");r=ctk.CTkFrame(m,fg_color="transparent",bg_color=SURFACE);r.grid(row=1,column=0,sticky="ew",padx=20,pady=(8,10));self.monitor_lines=self.label(r,"0 lines",SUBTLE,10);self.monitor_lines.pack(side="left");self.button(r,"Clear",self._clear_monitor,"quiet",height=27,width=65).pack(side="right");self.auto_button=self.button(r,"Autoscroll  ON",self._toggle_autoscroll,"quiet",height=27,width=115);self.auto_button.pack(side="right",padx=(8,0));self.monitor=ctk.CTkTextbox(m,height=165,corner_radius=13,bg_color=SURFACE,fg_color=CONSOLE,border_color=BORDER,border_width=1,text_color="#c7eee1",font=ctk.CTkFont(family=MONO,size=10),wrap="none");self.monitor.grid(row=2,column=0,sticky="ew",padx=20,pady=(0,19))
-        for tag,color in (("normal","#b9d1ce"),("warn",AMBER),("error",RED),("state",BLUE)):self.monitor.tag_config(tag,foreground=color)
-    def _toggle_autoscroll(self):self._autoscroll=not self._autoscroll;self.auto_button.configure(text="Autoscroll  "+("ON" if self._autoscroll else "OFF"))
-    def _clear_monitor(self):self.monitor.delete("1.0","end");self.monitor_lines.configure(text="0 lines")
-    def _refresh_ports(self):
-        if not hasattr(self,"port_combo"):return
-        ports=serial_link.list_ports(); vals=[f"{d}  ·  {x}" for d,x in ports];self.port_combo.configure(values=vals);auto=serial_link.find_board()
-        if auto:self.port_var.set(next((x for x in vals if x.startswith(auto)),auto))
-        if hasattr(self,"event_status"):self.event_status.configure(text=f"{len(vals)} serial port(s) detected — select one to connect.")
-    def _selected_port(self):return self.port_var.get().split()[0] if self.port_var.get() else None
-    def _connect(self):
-        p=self._selected_port()
-        if not p:return messagebox.showwarning("No port","Choose a serial port first.")
-        self.event_status.configure(text=f"Connecting to {p} … the board may take a moment to wake.",text_color=AMBER);self.connection_progress.grid();self.connection_progress.start();self.connect_button.configure(state="disabled");self._async(lambda:serial_link.FlightComputerLink(p),lambda r,e:self._connection_done(r,e,p))
-    def _connection_done(self,r,e,p):
-        try:
-            if hasattr(self,"connection_progress") and self.connection_progress.winfo_exists():self.connection_progress.stop();self.connection_progress.grid_remove()
-            if hasattr(self,"connect_button") and self.connect_button.winfo_exists():self.connect_button.configure(state="normal")
-            if e:
-                self.link=None
-                if hasattr(self,"connection") and self.connection.winfo_exists():self.connection.configure(text="●  OFFLINE",text_color=RED)
-                if hasattr(self,"event_status") and self.event_status.winfo_exists():self.event_status.configure(text=f"Connection failed: {e}",text_color=RED)
-                return self._done("Connection failed",e)
-            self.link=r;self._last_port=p
-            if hasattr(self,"connection") and self.connection.winfo_exists():self.connection.configure(text="●  CONNECTED",text_color=TEAL)
-            if hasattr(self,"side_hint") and self.side_hint.winfo_exists():self.side_hint.configure(text=f"Connected on {p}\nLive monitor active.")
-            if hasattr(self,"event_status") and self.event_status.winfo_exists():self.event_status.configure(text=f"Connected to {p} — checking board response …",text_color=TEAL)
-            if hasattr(self,"monitor_status") and self.monitor_status.winfo_exists():self.monitor_status.configure(text="●  Connected · waiting for output",text_color=AMBER)
-            self._monitor_job=self.after(100,self._poll_monitor);self._probe_connection()
-        except tk.TclError:
-            # Page navigation may have rebuilt the workspace while the port
-            # was opening. Keep the link and let Post-flight render it later.
-            self.link=r if not e else None;self._last_port=p if not e else self._last_port
+    # ---------------------------------------------------------------- sidebar
+    def _build_sidebar(self):
+        sb = ctk.CTkFrame(self, width=256, fg_color=SIDEBAR, corner_radius=0)
+        sb.grid(row=0, column=0, sticky="nsew")
+        sb.grid_propagate(False)
 
-    def _probe_connection(self):
-        """Perform a real protocol round-trip so a quiet monitor is not ambiguous."""
-        if not self.link:return
-        link=self.link;self._monitor_paused=True
-        self.event_status.configure(text="Connected. Sending INFO handshake to verify the board …",text_color=AMBER)
-        def done(result,error):
-            self._monitor_paused=False
-            if not hasattr(self,"monitor_status") or not self.monitor_status.winfo_exists():return
-            if error:
-                self.monitor_status.configure(text="●  Connected · no response",text_color=RED)
-                self.event_status.configure(text=f"Port opened, but board did not answer INFO: {error}",text_color=RED)
-                self._log("Monitor is connected but the board did not answer INFO. Check firmware/baud.")
+        # Logo block
+        logo_box = ctk.CTkFrame(sb, fg_color="transparent")
+        logo_box.pack(fill="x", padx=24, pady=(28, 32))
+        mark = ctk.CTkFrame(logo_box, width=42, height=42, fg_color=TEAL_DIM, corner_radius=14)
+        mark.pack(side="left", padx=(0, 14))
+        mark.pack_propagate(False)
+        ctk.CTkLabel(mark, text="A", text_color=TEAL,
+                     font=ctk.CTkFont(family=SANS, size=22, weight="bold")).place(
+            relx=.5, rely=.48, anchor="center")
+        ctk.CTkLabel(logo_box, text="AIRBRAKES", text_color=TEAL,
+                     font=ctk.CTkFont(family=SANS, size=17, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(logo_box, text="V3  /  GROUND STATION", text_color=SUBTLE,
+                     font=ctk.CTkFont(family=SANS, size=9, weight="bold")).pack(anchor="w")
+
+        # Nav buttons
+        self._nav_btns = {}
+        nav_items = [
+            ("Board",       "⌁"),
+            ("Pre-flight",  "◈"),
+            ("Ground test", "⚙"),
+            ("History",     "◷"),
+        ]
+        for name, glyph in nav_items:
+            btn = ctk.CTkButton(
+                sb, text=f"  {glyph}   {name}", anchor="w",
+                height=48, corner_radius=14,
+                fg_color="transparent", bg_color=SIDEBAR,
+                hover_color=FIELD, text_color=MUTED,
+                font=ctk.CTkFont(family=SANS, size=13, weight="bold"),
+                command=lambda n=name: self._show_page(n))
+            btn.pack(fill="x", padx=12, pady=3)
+            self._nav_btns[name] = btn
+
+        ctk.CTkFrame(sb, height=1, fg_color=BORDER).pack(fill="x", padx=22, pady=28)
+
+        # Connection status
+        ctk.CTkLabel(sb, text="BOARD LINK", text_color=SUBTLE,
+                     font=ctk.CTkFont(family=SANS, size=9, weight="bold")).pack(
+            anchor="w", padx=26)
+        conn_card = ctk.CTkFrame(sb, fg_color=SURFACE, corner_radius=13)
+        conn_card.pack(fill="x", padx=18, pady=(8, 6))
+        self._conn_dot = ctk.CTkLabel(
+            conn_card, text="●  OFFLINE", text_color=RED,
+            font=ctk.CTkFont(family=SANS, size=11, weight="bold"))
+        self._conn_dot.pack(anchor="w", padx=14, pady=(10, 2))
+        self._conn_hint = ctk.CTkLabel(
+            conn_card, text="Auto-scanning for board…", text_color=MUTED,
+            font=ctk.CTkFont(family=SANS, size=10),
+            wraplength=190, justify="left")
+        self._conn_hint.pack(anchor="w", padx=14, pady=(0, 10))
+
+        # Auto-connect toggle
+        self._autoconn_var = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            sb, text="Auto-connect", variable=self._autoconn_var,
+            text_color=MUTED, font=ctk.CTkFont(family=SANS, size=11),
+            fg_color=TEAL_MID, hover_color=TEAL_DIM, border_color=BORDER,
+            checkmark_color=TEAL,
+            command=self._toggle_autoconnect).pack(anchor="w", padx=22, pady=(4, 0))
+
+    # ---------------------------------------------------------------- nav
+    def _show_page(self, name: str):
+        for pname, pbtn in self._nav_btns.items():
+            active = pname == name
+            pbtn.configure(
+                fg_color=TEAL_DIM if active else "transparent",
+                text_color=TEXT if active else MUTED)
+        for pname, pframe in self._pages.items():
+            if pname == name:
+                pframe.grid(row=0, column=0, sticky="nsew")
             else:
-                self.monitor_status.configure(text="●  Live · board verified",text_color=TEAL)
-                self.event_status.configure(text=f"Board verified — storage: {result}. Waiting for live output …",text_color=TEAL)
-                self._append_monitor("INFO handshake succeeded — serial link is healthy.","state")
-                self._append_monitor("Waiting for boot or diagnostic output …","normal")
-                self._log("The monitor will show boot/diagnostic lines when the board emits them.")
-        self._async(link.get_info,done)
+                pframe.grid_remove()
 
-    def _reconnect_after_upload(self,port,attempt=0):
-        """Re-open the monitor after PlatformIO resets the board."""
-        if attempt >= 8:
-            self.connection.configure(text="●  OFFLINE",text_color=RED)
-            self.side_hint.configure(text="Upload finished.\nReconnect to view serial output.")
-            self._log("Board did not reappear automatically. Use Connect to retry.")
+    # ================================================================= Toast
+    def toast(self, msg: str, kind: str = "ok", duration: int = 4000):
+        """Non-blocking toast.  kind = 'ok' | 'warn' | 'error' | 'info'."""
+        palettes = {
+            "ok":    (TEAL,  TEAL_DIM,  TEAL_MID),
+            "warn":  (AMBER, AMBER_DIM, "#6b4e0a"),
+            "error": (RED,   RED_DIM,   "#6b1522"),
+            "info":  (BLUE,  "#0e2040",  "#1e3a6b"),
+        }
+        tc, bg, brd = palettes.get(kind, palettes["ok"])
+        self._toast_frame.configure(fg_color=bg, border_color=brd)
+        self._toast_label.configure(text=msg, text_color=tc)
+        if not self._toast_visible:
+            self._toast_frame.place(relx=0.01, rely=0.01, relwidth=0.98)
+            self._toast_visible = True
+        if self._toast_job:
+            try:
+                self.after_cancel(self._toast_job)
+            except tk.TclError:
+                pass
+        if duration > 0:
+            self._toast_job = self.after(duration, self._dismiss_toast)
+
+    def _dismiss_toast(self):
+        self._toast_frame.place_forget()
+        self._toast_visible = False
+        self._toast_job = None
+
+    # ================================================================= Auto-connect
+    def _toggle_autoconnect(self):
+        self._auto_connect_enabled = self._autoconn_var.get()
+        if self._auto_connect_enabled:
+            self.toast("Auto-connect enabled", "info")
+            self._auto_connect_tick()
+        else:
+            self.toast("Auto-connect disabled", "warn")
+            if self._auto_connect_job:
+                try:
+                    self.after_cancel(self._auto_connect_job)
+                except tk.TclError:
+                    pass
+                self._auto_connect_job = None
+
+    def _auto_connect_tick(self):
+        self._auto_connect_job = None
+        if not self._auto_connect_enabled:
             return
-        self._log(f"Waiting for {port} to reappear (attempt {attempt + 1}/8) …")
+        if not self.link and not self._op_running:
+            def scan():
+                return serial_link.find_board()
+
+            def on_scan(port, err):
+                if port and not self.link:
+                    self._log_activity(f"Board detected on {port} — auto-connecting…")
+                    self._conn_hint.configure(text=f"Found on {port} — connecting…")
+                    self._do_connect(port, auto=True)
+
+            _run_bg(self, scan, on_scan)
+        self._auto_connect_job = self.after(2000, self._auto_connect_tick)
+
+    # ================================================================= Widget helpers
+    def _lbl(self, parent, text, color=TEXT, size=12, weight="normal", **kw):
+        return ctk.CTkLabel(parent, text=text, text_color=color,
+                            font=ctk.CTkFont(family=SANS, size=size, weight=weight), **kw)
+
+    def _btn(self, parent, text, cmd, kind="secondary", width=140, height=38, **kw):
+        palettes = {
+            "primary":   (TEAL,       "#29c49e", "#041410"),
+            "secondary": (FIELD,      HOVER,     TEXT),
+            "quiet":     ("transparent", FIELD,  MUTED),
+            "danger":    ("#4a2028",  "#662030", RED),
+            "warn":      (AMBER_DIM,  "#5c4208", AMBER),
+        }
+        fg, ho, tc = palettes.get(kind, palettes["secondary"])
+        return ctk.CTkButton(
+            parent, text=text, command=cmd,
+            width=width, height=height, corner_radius=12,
+            fg_color=fg, hover_color=ho, text_color=tc,
+            font=ctk.CTkFont(family=SANS, size=12, weight="bold"), **kw)
+
+    def _card(self, parent, **kw):
+        return ctk.CTkFrame(parent, fg_color=CARD, border_color=BORDER,
+                            border_width=1, corner_radius=18, **kw)
+
+    def _section_title(self, parent, eyebrow, title, subtitle=""):
+        ctk.CTkLabel(parent, text=eyebrow.upper(), text_color=TEAL,
+                     font=ctk.CTkFont(family=SANS, size=9, weight="bold")).pack(
+            anchor="w", padx=28, pady=(26, 2))
+        ctk.CTkLabel(parent, text=title, text_color=TEXT,
+                     font=ctk.CTkFont(family=SANS, size=28, weight="bold")).pack(
+            anchor="w", padx=28, pady=(4, 2))
+        if subtitle:
+            ctk.CTkLabel(parent, text=subtitle, text_color=MUTED,
+                         font=ctk.CTkFont(family=SANS, size=12),
+                         wraplength=860, justify="left").pack(
+                anchor="w", padx=28, pady=(2, 18))
+
+    # ================================================================= Activity log (shared)
+    def _build_activity_widget(self, parent):
+        card = self._card(parent)
+        card.pack(fill="x", padx=20, pady=(0, 20))
+
+        hdr = ctk.CTkFrame(card, fg_color="transparent")
+        hdr.pack(fill="x", padx=18, pady=(16, 0))
+        self._lbl(hdr, "LIVE ACTIVITY", TEAL, 9, "bold").pack(side="left")
+        self._activity_title = self._lbl(hdr, "Standing by", TEXT, 12, "bold")
+        self._activity_title.pack(side="right")
+
+        self._activity_detail = self._lbl(card, "Your next operation will appear here.",
+                                          MUTED, 10)
+        self._activity_detail.pack(anchor="w", padx=18, pady=(4, 0))
+
+        self._activity_bar = ctk.CTkProgressBar(card, height=8, corner_radius=4,
+                                                 fg_color=FIELD, progress_color=TEAL)
+        self._activity_bar.pack(fill="x", padx=18, pady=(10, 4))
+        self._activity_bar.set(0)
+
+        foot = ctk.CTkFrame(card, fg_color="transparent")
+        foot.pack(fill="x", padx=18, pady=(0, 4))
+        self._activity_pct = self._lbl(foot, "0%", SUBTLE, 10, "bold")
+        self._activity_pct.pack(side="left")
+        self._log_toggle_btn = self._btn(foot, "▸  Details", self._toggle_log, "quiet", 100, 27)
+        self._log_toggle_btn.pack(side="right", padx=(0, 8))
+        self._btn(foot, "Clear", self._clear_log, "quiet", 65, 27).pack(side="right")
+
+        self._log_box = ctk.CTkTextbox(
+            card, height=130, corner_radius=12,
+            fg_color=CONSOLE, border_color=BORDER, border_width=1,
+            text_color="#b3e8d5",
+            font=ctk.CTkFont(family=MONO, size=10), wrap="none")
+        self._log_box.pack(fill="x", padx=18, pady=(2, 14))
+        self._log_box.pack_forget()
+        self._log_box.configure(state="disabled")
+        self._log_visible = False
+        return card
+
+    def _set_activity(self, text: str, running=False):
+        self._op_running = running
+        if not hasattr(self, "_activity_title"):
+            return
+        self._activity_title.configure(text=text)
+        if running:
+            self._activity_bar.configure(mode="indeterminate")
+            self._activity_bar.start()
+            self._activity_pct.configure(text="Working…")
+            self._activity_detail.configure(
+                text="Processing in the background — open Details for technical output")
+        else:
+            self._activity_bar.stop()
+            self._activity_bar.configure(mode="determinate")
+            ok = "fail" not in text.lower() and "error" not in text.lower()
+            self._activity_bar.set(1.0 if ok else 0.0)
+            self._activity_pct.configure(text="Done" if ok else "Needs attention")
+            self._activity_detail.configure(
+                text="Operation finished" if ok else "Open Details for more information")
+
+    def _log_activity(self, s: str):
+        try:
+            if hasattr(self, "_log_box") and self._log_box.winfo_exists():
+                self._log_box.configure(state="normal")
+                self._log_box.insert("end", s + "\n")
+                self._log_box.see("end")
+                self._log_box.configure(state="disabled")
+        except tk.TclError:
+            pass
+
+    def _toggle_log(self):
+        self._log_visible = not self._log_visible
+        if self._log_visible:
+            self._log_box.pack(fill="x", padx=18, pady=(2, 14))
+            self._log_toggle_btn.configure(text="▾  Details")
+        else:
+            self._log_box.pack_forget()
+            self._log_toggle_btn.configure(text="▸  Details")
+
+    def _clear_log(self):
+        if hasattr(self, "_log_box"):
+            self._log_box.configure(state="normal")
+            self._log_box.delete("1.0", "end")
+            self._log_box.configure(state="disabled")
+
+    # ================================================================= Serial monitor (shared)
+    def _build_monitor_widget(self, parent):
+        card = self._card(parent)
+        card.pack(fill="x", padx=20, pady=(0, 20))
+
+        hdr = ctk.CTkFrame(card, fg_color="transparent")
+        hdr.pack(fill="x", padx=18, pady=(16, 6))
+        self._lbl(hdr, "LIVE SERIAL MONITOR", TEAL, 9, "bold").pack(side="left")
+        self._monitor_status_lbl = self._lbl(hdr, "●  Waiting for board", MUTED, 10, "bold")
+        self._monitor_status_lbl.pack(side="right")
+
+        ctrl = ctk.CTkFrame(card, fg_color="transparent")
+        ctrl.pack(fill="x", padx=18, pady=(0, 6))
+        self._monitor_lines_lbl = self._lbl(ctrl, "0 lines", SUBTLE, 10)
+        self._monitor_lines_lbl.pack(side="left")
+        self._btn(ctrl, "Clear", self._clear_monitor, "quiet", 65, 27).pack(side="right")
+        self._autoscroll_btn = self._btn(
+            ctrl, "Autoscroll  ON", self._toggle_autoscroll, "quiet", 118, 27)
+        self._autoscroll_btn.pack(side="right", padx=(0, 8))
+
+        self._monitor_box = ctk.CTkTextbox(
+            card, height=170, corner_radius=12,
+            fg_color=CONSOLE, border_color=BORDER, border_width=1,
+            text_color="#c5ede0",
+            font=ctk.CTkFont(family=MONO, size=10), wrap="none")
+        self._monitor_box.pack(fill="x", padx=18, pady=(0, 14))
+
+        tb = self._monitor_box._textbox
+        tb.tag_config("normal", foreground="#c5ede0")
+        tb.tag_config("warn",   foreground=AMBER)
+        tb.tag_config("error",  foreground=RED)
+        tb.tag_config("state",  foreground=BLUE)
+        return card
+
+    def _toggle_autoscroll(self):
+        self._autoscroll = not self._autoscroll
+        self._autoscroll_btn.configure(
+            text="Autoscroll  " + ("ON" if self._autoscroll else "OFF"))
+        self.toast(f"Autoscroll {'enabled' if self._autoscroll else 'disabled'}", "info", 2000)
+
+    def _clear_monitor(self):
+        self._monitor_box.configure(state="normal")
+        self._monitor_box.delete("1.0", "end")
+        self._monitor_box.configure(state="disabled")
+        self._monitor_lines_lbl.configure(text="0 lines")
+        self.toast("Monitor cleared", "info", 1500)
+
+    def _append_monitor(self, text: str, tag="normal"):
+        try:
+            if not hasattr(self, "_monitor_box") or not self._monitor_box.winfo_exists():
+                return
+            tb = self._monitor_box._textbox
+            tb.configure(state="normal")
+            tb.insert("end", str(text) + "\n", tag)
+            if self._autoscroll:
+                tb.see("end")
+            tb.configure(state="disabled")
+        except tk.TclError:
+            pass
+
+    def _start_monitor_poll(self):
+        if self._monitor_job is None:
+            self._monitor_job = self.after(250, self._poll_monitor)
+
+    def _poll_monitor(self):
+        self._monitor_job = None
+        if self.link and not self._monitor_paused:
+            try:
+                lines = self.link.read_available_lines()
+                for line in lines:
+                    lo = line.lower()
+                    tag = ("error" if "error" in lo or "fail" in lo
+                           else "warn"  if "warn" in lo
+                           else "state" if "state" in lo
+                           else "normal")
+                    self._append_monitor(line, tag)
+                if lines:
+                    tb = self._monitor_box._textbox
+                    count = int(tb.index("end-1c").split(".")[0]) - 1
+                    if count > 600:
+                        tb.configure(state="normal")
+                        tb.delete("1.0", "100.0")
+                        tb.configure(state="disabled")
+                        count = max(0, count - 100)
+                    self._monitor_lines_lbl.configure(text=f"{count:,} lines")
+                    self._monitor_status_lbl.configure(
+                        text=f"●  Live · {len(lines)} new line(s)", text_color=TEAL)
+            except Exception as err:
+                self._monitor_status_lbl.configure(
+                    text=f"●  Monitor paused: {err}", text_color=RED)
+        if self.link:
+            self._monitor_job = self.after(250, self._poll_monitor)
+
+    # ================================================================= Connection helpers
+    def _do_connect(self, port: str, auto=False):
+        self._set_activity(f"Connecting to {port}…", True)
+        self._log_activity(f"Opening {port}…")
+        if hasattr(self, "_board_prog") and self._board_prog.winfo_exists():
+            self._board_prog.configure(mode="indeterminate")
+            self._board_prog.start()
+            self._board_prog.grid()
+        if hasattr(self, "_board_event_lbl") and self._board_event_lbl.winfo_exists():
+            self._board_event_lbl.configure(
+                text=f"Connecting to {port}… board may need a moment", text_color=AMBER)
+
+        def task():
+            return serial_link.FlightComputerLink(port)
+
+        def done(result, err):
+            try:
+                if hasattr(self, "_board_prog") and self._board_prog.winfo_exists():
+                    self._board_prog.stop()
+                    self._board_prog.grid_remove()
+            except tk.TclError:
+                pass
+            if err:
+                self.link = None
+                self._conn_dot.configure(text="●  OFFLINE", text_color=RED)
+                self._conn_hint.configure(text="Connection failed.")
+                if hasattr(self, "_board_event_lbl"):
+                    try:
+                        self._board_event_lbl.configure(
+                            text=f"Connection failed: {err}", text_color=RED)
+                    except tk.TclError:
+                        pass
+                self._set_activity("Connection failed", False)
+                self._log_activity(f"Error: {err}")
+                if not auto:
+                    self.toast(f"Connection failed: {err}", "error", 0)
+                return
+            self.link = result
+            self._last_port = port
+            self._conn_dot.configure(text="●  CONNECTED", text_color=TEAL)
+            self._conn_hint.configure(text=f"Connected on {port}")
+            if hasattr(self, "_board_event_lbl"):
+                try:
+                    self._board_event_lbl.configure(
+                        text=f"Connected to {port} — board link active", text_color=TEAL)
+                except tk.TclError:
+                    pass
+            if hasattr(self, "_monitor_status_lbl"):
+                try:
+                    self._monitor_status_lbl.configure(
+                        text="●  Connected · waiting for output", text_color=AMBER)
+                except tk.TclError:
+                    pass
+            self._set_activity("Connected", False)
+            self._log_activity(f"Connected to {port}")
+            self.toast(f"Board connected on {port}", "ok")
+            self._start_monitor_poll()
+            if hasattr(self, "_port_var"):
+                self._port_var.set(port)
+
+        _run_bg(self, task, done)
+
+    def _disconnect(self):
+        if self.link:
+            try:
+                self.link.close()
+            except Exception:
+                pass
+            self.link = None
+        if self._monitor_job:
+            try:
+                self.after_cancel(self._monitor_job)
+            except tk.TclError:
+                pass
+            self._monitor_job = None
+        self._conn_dot.configure(text="●  OFFLINE", text_color=RED)
+        self._conn_hint.configure(text="Disconnected — scan or connect manually")
+        if hasattr(self, "_board_event_lbl"):
+            try:
+                self._board_event_lbl.configure(
+                    text="Disconnected — choose a port to reconnect", text_color=MUTED)
+            except tk.TclError:
+                pass
+        if hasattr(self, "_monitor_status_lbl"):
+            try:
+                self._monitor_status_lbl.configure(text="●  Disconnected", text_color=MUTED)
+            except tk.TclError:
+                pass
+        self._set_activity("Disconnected", False)
+        self.toast("Board disconnected", "warn")
+
+    def _reconnect_after_upload(self, port, attempt=0):
+        if attempt >= 8:
+            self._conn_dot.configure(text="●  OFFLINE", text_color=RED)
+            self._conn_hint.configure(text="Reconnect manually after upload.")
+            self.toast("Board did not reappear — reconnect manually", "warn")
+            return
+        self._log_activity(f"Waiting for {port} to reappear ({attempt+1}/8)…")
+
         def task():
             time.sleep(1.0)
             return serial_link.FlightComputerLink(port)
-        def done(result,error):
-            if error:
-                self.after(500,lambda:self._reconnect_after_upload(port,attempt + 1))
-            else:
-                self.link=result;self._last_port=port
-                if hasattr(self,"connection") and self.connection.winfo_exists():self.connection.configure(text="●  CONNECTED",text_color=TEAL)
-                if hasattr(self,"side_hint") and self.side_hint.winfo_exists():self.side_hint.configure(text=f"Connected on {port}\nMonitor restored after upload.")
-                self._log("Board rebooted and serial monitor restored.")
-                if hasattr(self,"monitor_status") and self.monitor_status.winfo_exists():self.monitor_status.configure(text="●  Live",text_color=TEAL)
-                self._monitor_job=self.after(100,self._poll_monitor)
-        self._async(task,done)
-    def _disconnect(self):
-        if self.link:self.link.close();self.link=None
-        if hasattr(self,"connection_progress"):self.connection_progress.stop();self.connection_progress.grid_remove()
-        if hasattr(self,"connect_button"):self.connect_button.configure(state="normal")
-        self.connection.configure(text="●  OFFLINE",text_color=RED);self.side_hint.configure(text="Connect a board from\nthe Post-flight page.")
-        if hasattr(self,"monitor_status"):self.monitor_status.configure(text="●  Disconnected",text_color=MUTED)
-        if hasattr(self,"event_status"):self.event_status.configure(text="Disconnected — choose a port to reconnect.",text_color=MUTED)
-    def _poll_monitor(self):
-        self._monitor_job=None
-        if self.link and not self._monitor_paused and hasattr(self,"monitor"):
-            try:
-                lines=self.link.read_available_lines()
-                for line in lines:
-                    low=line.lower();tag="error" if "error" in low or "fail" in low else "warn" if "warn" in low else "state" if "state" in low else "normal";self._append_monitor(line,tag)
-                if lines:
-                    count=int(self.monitor.index("end-1c").split(".")[0])-1
-                    if count>500:self.monitor.delete("1.0","100.0")
-                    self.monitor_lines.configure(text=f"{count:,} lines")
-                    if self._autoscroll:self.monitor.see("end")
-                    if hasattr(self,"monitor_status"):self.monitor_status.configure(text=f"●  Live · {len(lines)} new line(s)",text_color=TEAL)
-            except Exception as error:
-                if hasattr(self,"event_status"):self.event_status.configure(text=f"Serial monitor paused: {error}",text_color=RED)
-        if self.link:self._monitor_job=self.after(250,self._poll_monitor)
-    def _append_monitor(self,text,tag="normal"):
-        if not hasattr(self,"monitor") or not self.monitor.winfo_exists():return
-        self.monitor.insert("end",str(text)+"\n",tag)
-    def _ground_test_start(self):
-        if not self.link:return messagebox.showwarning("Not connected","Connect to the board first.")
-        if not messagebox.askyesno("Arm ground test","Keep clear of the airbrakes. After you shake the rocket, it records for 15 seconds and moves the brakes close → open → close. Continue?"):return
-        self._ground_test_command(self.link.ground_test_start,"Arming ground test")
-    def _ground_test_abort(self):
-        if not self.link:return messagebox.showwarning("Not connected","Connect to the board first.")
-        self._ground_test_command(self.link.ground_test_abort,"Aborting ground test")
-    def _ground_test_status(self):
-        if not self.link:return messagebox.showwarning("Not connected","Connect to the board first.")
-        self._ground_test_command(self.link.ground_test_status,"Checking ground-test status")
-    def _baro_status(self):
-        if not self.link:return messagebox.showwarning("Not connected","Connect to the board first.")
-        self._monitor_paused=True;self._activity("Checking DPS368",True)
-        def done(result,error):
-            self._monitor_paused=False
-            if error:
-                self._activity("DPS368 check failed",False);self._log("DPS368 error: "+str(error));return
-            self._append_monitor(result,"state");self._activity("DPS368 status received",False);self._log(result)
-        self._async(self.link.baro_status,done)
-    def _ground_test_command(self,command,label):
-        self._monitor_paused=True;self.ground_test_status.configure(text=label+" …",text_color=AMBER);self._activity(label,True)
-        def done(result,error):
-            self._monitor_paused=False
-            if error:
-                self.ground_test_status.configure(text=str(error),text_color=RED);self._activity("Ground test command failed",False);self._log("Ground test error: "+str(error))
-            else:
-                self.ground_test_status.configure(text=result,text_color=TEAL);self._activity("Ground test updated",False);self._log(result)
-        self._async(command,done)
-    def _list_flights(self):
-        if not self.link:return messagebox.showwarning("Not connected","Connect to the board first.")
-        self._monitor_paused=True;self._activity("Reading flights from board",True);self._log("Sending LIST request …");self.flight_status.configure(text="Reading onboard flight files …",text_color=AMBER);self._async(self.link.list_flights,self._flights_done)
-    def _flights_done(self,r,e):
-        self._monitor_paused=False
-        if e:self._activity("Flight list failed",False);return self.flight_status.configure(text=str(e),text_color=RED)
-        self._flights=r
-        for x in self.flight_list.winfo_children():x.destroy()
-        for i,f in enumerate(r):
-            row=ctk.CTkFrame(self.flight_list,fg_color=FIELD,bg_color=SURFACE,corner_radius=11);row.pack(fill="x",padx=6,pady=3);row.bind("<Button-1>",lambda event,index=i:self._select_flight(index));self.label(row,f"{i+1:02d}",TEAL,11,"bold",width=32).pack(side="left",padx=(12,4),pady=10);self.label(row,f["file"],TEXT,11,"bold").pack(side="left",padx=4);self.label(row,f["size"],MUTED,10).pack(side="right",padx=12)
-            if f["active"]:self.pill(row,"ACTIVE").pack(side="right",padx=4)
-        if not r:self.label(self.flight_list,"No flights found on the board.",MUTED,11).pack(pady=18)
-        self.flight_status.configure(text=f"{len(r)} flight(s) on board",text_color=MUTED);self._activity("Flights loaded",False);self._log(f"Found {len(r)} flight(s) on the board.")
-    def _select_flight(self,index):
-        self._selected_flight=index
-        self.flight_status.configure(text=f"Selected {self._flights[index]['file']}",text_color=TEAL)
-    def _download(self):
-        if not self._flights:return messagebox.showinfo("Nothing selected","List flights first.")
-        if self._selected_flight is None:return messagebox.showinfo("Choose a flight","Click a flight row, then download it.")
-        self._download_numbers([self._flights[self._selected_flight]["num"]],delete=False)
-    def _download_numbers(self,numbers,delete=True):
-        self._monitor_paused=True;self._activity("Downloading flight data",True)
-        def task():
-            saved=[]
-            for n in numbers:
-                records=self.link.download_flight(n)
-                config_h=os.path.join(self.repo_path,"include","config.h") if self.repo_path else None
-                category = "ground_test" if any(x.get("state_name", "").startswith("GROUND_TEST") for x in records) else "flight"
-                saved.append(self.store.save_flight(n,records,config_h_path=config_h,category=category))
-                if delete and not any(f["num"]==n and f["active"] for f in self._flights):self.link.delete_flight(n)
-            return saved
-        self._async(task,self._download_done)
-    def _download_all(self):
-        if not self.link or not self._flights:return messagebox.showwarning("No flights","Connect and list flights first.")
-        nums=[f["num"] for f in self._flights if f["num"] is not None]
-        self._download_numbers(nums)
-    def _download_done(self,r,e):
-        self._monitor_paused=False
-        if e:
-            self.flight_status.configure(text=f"Download failed: {e}",text_color=RED);self._activity("Download failed",False)
-        else:
-            self.flight_status.configure(text=f"Saved {len(r)} flight(s) to {self.data_dir}",text_color=TEAL);self._activity("Download complete",False)
-    def _history(self):
-        self.title_block("Analysis","Flight history","All saved sessions in one place. Select a session to inspect it, or remove local copies here.");c=self.card();c.grid(row=3,column=0,sticky="ew",padx=10,pady=8);c.grid_columnconfigure(0,weight=1);self.label(c,"Saved sessions",TEXT,17,"bold").grid(row=0,column=0,sticky="w",padx=20,pady=(19,5));self.button(c,"Delete all local data",self._delete_all_local,"danger",height=32).grid(row=0,column=1,padx=20,pady=(15,5));entries=self.store.list_by_category("flight")
-        tests=self.store.list_by_category("ground_test")
-        if entries:
-            for i,e in enumerate(entries,1):
-                self._history_row(c,e,i,TEAL,"FLIGHT")
-            if tests:
-                self.label(c,"Ground tests",TEXT,17,"bold").grid(row=len(entries)+1,column=0,sticky="w",padx=20,pady=(22,5))
-                for j,e in enumerate(tests, len(entries)+2):
-                    self._history_row(c,e,j,AMBER,"GROUND TEST")
-        elif tests:
-            self.label(c,"Ground tests",TEXT,17,"bold").grid(row=0,column=0,sticky="w",padx=20,pady=(19,5))
-            for j,e in enumerate(tests, 1):
-                self._history_row(c,e,j,AMBER,"GROUND TEST")
-        else:
-            x=ctk.CTkFrame(c,fg_color="transparent",bg_color=SURFACE);x.grid(row=1,column=0,sticky="ew",pady=70);self.label(x,"◌",TEAL,34).pack();self.label(x,"No saved flights yet",TEXT,15,"bold").pack(pady=(7,3));self.label(x,"Download a flight from Post-flight to see it here.",MUTED,11).pack()
 
-if __name__=="__main__":App().mainloop()
+        def done(result, err):
+            if err:
+                self.after(500, lambda: self._reconnect_after_upload(port, attempt + 1))
+            else:
+                self.link = result
+                self._last_port = port
+                self._conn_dot.configure(text="●  CONNECTED", text_color=TEAL)
+                self._conn_hint.configure(text=f"Reconnected after upload on {port}")
+                self._log_activity("Board rebooted — serial monitor restored")
+                self.toast(f"Board reconnected on {port} after upload", "ok")
+                self._start_monitor_poll()
+
+        _run_bg(self, task, done)
+
+    # ================================================================= Repo / data dir
+    def _choose_repo_prompt(self):
+        messagebox.showinfo(
+            "First-time setup",
+            "Point this app at your local Airbrakes-V3 repo folder "
+            "(the one containing platformio.ini).")
+        self._choose_repo()
+
+    def _choose_repo(self):
+        path = filedialog.askdirectory(title="Select Airbrakes-V3 repo folder")
+        if path:
+            self.repo_path = path
+            self.cfg["repo_path"] = path
+            save_config(self.cfg)
+            if hasattr(self, "_repo_path_lbl"):
+                self._repo_path_lbl.configure(text=path)
+            self._reload_config_fields()
+            self.toast(f"Repo set: {path}", "ok")
+
+    def _choose_data_dir(self):
+        path = filedialog.askdirectory(title="Select flight data folder")
+        if path:
+            self.data_dir = path
+            self.cfg["data_dir"] = path
+            save_config(self.cfg)
+            self.store = data_store.DataStore(self.data_dir)
+            self._refresh_history_list()
+            self.toast(f"Data folder set: {path}", "ok")
+
+    # ================================================================= BOARD PAGE
+    def _build_board_page(self):
+        page = ctk.CTkScrollableFrame(
+            self.content, fg_color=BG,
+            scrollbar_fg_color=BG, scrollbar_button_color=FIELD,
+            scrollbar_button_hover_color=HOVER, corner_radius=0)
+        page.grid_columnconfigure(0, weight=1)
+        self._pages["Board"] = page
+
+        self._section_title(page, "TELEMETRY", "Board",
+                            "Connect, download flights, and manage on-board storage.")
+
+        # Connection card
+        conn_card = self._card(page)
+        conn_card.pack(fill="x", padx=20, pady=(0, 16))
+        conn_card.grid_columnconfigure(1, weight=1)
+
+        self._lbl(conn_card, "Board connection", TEXT, 17, "bold").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=20, pady=(18, 8))
+        self._lbl(conn_card, "Port", MUTED, 11).grid(
+            row=1, column=0, sticky="w", padx=20)
+
+        self._port_var = tk.StringVar()
+        self._port_combo = ctk.CTkComboBox(
+            conn_card, variable=self._port_var,
+            height=38, corner_radius=10,
+            fg_color=FIELD, border_width=1, border_color=BORDER,
+            button_color=FIELD, button_hover_color=HOVER,
+            dropdown_fg_color=SURFACE2, dropdown_hover_color=HOVER,
+            text_color=TEXT, values=[],
+            font=ctk.CTkFont(family=MONO, size=11))
+        self._port_combo.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=6)
+        self._btn(conn_card, "Refresh", self._refresh_ports, "secondary", 90).grid(
+            row=1, column=2, padx=(0, 20), pady=6)
+
+        br = ctk.CTkFrame(conn_card, fg_color="transparent")
+        br.grid(row=2, column=0, columnspan=3, sticky="w", padx=20, pady=(0, 4))
+        self._connect_btn = self._btn(br, "Connect", self._manual_connect, "primary", 120)
+        self._connect_btn.pack(side="left", padx=(0, 10))
+        self._btn(br, "Disconnect", self._disconnect, "secondary", 120).pack(
+            side="left", padx=(0, 10))
+        self._btn(br, "Verify (INFO)", self._verify_connection, "secondary", 130).pack(
+            side="left")
+
+        self._board_prog = ctk.CTkProgressBar(
+            conn_card, height=7, corner_radius=4, fg_color=FIELD, progress_color=TEAL)
+        self._board_prog.grid(row=3, column=0, columnspan=3, sticky="ew",
+                              padx=20, pady=(4, 0))
+        self._board_prog.set(0)
+        self._board_prog.grid_remove()
+
+        self._board_event_lbl = self._lbl(
+            conn_card, "Ready — choose a port or wait for auto-connect", MUTED, 10)
+        self._board_event_lbl.grid(row=4, column=0, columnspan=3, sticky="w",
+                                   padx=20, pady=(4, 16))
+
+        # Stored flights card
+        flights_card = self._card(page)
+        flights_card.pack(fill="x", padx=20, pady=(0, 16))
+        flights_card.grid_columnconfigure(0, weight=1)
+
+        fhdr = ctk.CTkFrame(flights_card, fg_color="transparent")
+        fhdr.grid(row=0, column=0, columnspan=2, sticky="ew", padx=20, pady=(18, 4))
+        self._lbl(fhdr, "Flights on board", TEXT, 17, "bold").pack(side="left")
+        self._btn(fhdr, "List flights", self._list_flights, "secondary", 120, 32).pack(
+            side="right")
+
+        self._flights_status_lbl = self._lbl(
+            flights_card, "Connect and click 'List flights' to see on-board flights", MUTED, 11)
+        self._flights_status_lbl.grid(row=1, column=0, sticky="w", padx=20, pady=(0, 8))
+
+        self._flights_list_frame = ctk.CTkFrame(flights_card, fg_color="transparent")
+        self._flights_list_frame.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 4))
+
+        bar = ctk.CTkFrame(flights_card, fg_color="transparent")
+        bar.grid(row=3, column=0, sticky="w", padx=20, pady=(4, 18))
+        self._btn(bar, "Download selected",          self._download_selected, "primary",  170).pack(side="left", padx=(0, 10))
+        self._btn(bar, "Download all",               self._download_all,      "primary",  140).pack(side="left", padx=(0, 10))
+        self._btn(bar, "Delete selected from device", self._delete_from_device, "danger", 210).pack(side="left")
+
+        self._build_monitor_widget(page)
+        self._build_activity_widget(page)
+        self._refresh_ports()
+
+    # ---- Board actions ----
+    def _refresh_ports(self):
+        ports = serial_link.list_ports()
+        vals = [f"{dev}  ·  {desc}" for dev, desc in ports]
+        if hasattr(self, "_port_combo"):
+            self._port_combo.configure(values=vals)
+        auto = serial_link.find_board()
+        if auto and hasattr(self, "_port_var"):
+            matched = next((v for v in vals if v.startswith(auto)), auto)
+            self._port_var.set(matched)
+        n = len(vals)
+        if hasattr(self, "_board_event_lbl"):
+            try:
+                self._board_event_lbl.configure(
+                    text=f"{n} serial port(s) found — select one, or wait for auto-connect")
+            except tk.TclError:
+                pass
+        self.toast(f"Port scan: {n} port(s) found", "info", 2000)
+
+    def _selected_port(self):
+        val = getattr(self, "_port_var", tk.StringVar()).get()
+        return val.split()[0] if val else None
+
+    def _manual_connect(self):
+        port = self._selected_port()
+        if not port:
+            self.toast("Select a serial port first", "warn")
+            messagebox.showwarning("No port", "Choose a serial port first.")
+            return
+        # Disable auto-connect so this manual selection is respected
+        self._auto_connect_enabled = False
+        self._autoconn_var.set(False)
+        self._do_connect(port, auto=False)
+
+    def _verify_connection(self):
+        if not self.link:
+            self.toast("Not connected — connect first", "warn")
+            messagebox.showwarning("Not connected", "Connect to the board first.")
+            return
+        self.toast("Sending INFO to board…", "info", 2000)
+        self._set_activity("Verifying board connection…", True)
+        self._monitor_paused = True
+
+        def task():
+            return self.link.get_info()
+
+        def done(result, err):
+            self._monitor_paused = False
+            if err:
+                self._set_activity("Verification failed", False)
+                self._board_event_lbl.configure(text=f"INFO failed: {err}", text_color=RED)
+                self.toast(f"Verification failed: {err}", "error", 0)
+            else:
+                self._set_activity("Board verified", False)
+                self._board_event_lbl.configure(
+                    text=f"Board verified — {result}", text_color=TEAL)
+                self.toast(f"Board verified: {result}", "ok")
+
+        _run_bg(self, task, done)
+
+    def _list_flights(self):
+        if not self.link:
+            self.toast("Not connected — connect first", "warn")
+            messagebox.showwarning("Not connected", "Connect first.")
+            return
+        self.toast("Listing flights on board…", "info", 2000)
+        self._set_activity("Reading flights from board…", True)
+        self._monitor_paused = True
+        self._flights_status_lbl.configure(text="Reading flight list…", text_color=AMBER)
+
+        def task():
+            return self.link.list_flights()
+
+        def done(result, err):
+            self._monitor_paused = False
+            if err:
+                self._set_activity("List failed", False)
+                self._flights_status_lbl.configure(text=str(err), text_color=RED)
+                self.toast(f"List failed: {err}", "error", 0)
+                return
+            self._flights_on_board = result
+            self._selected_flight_idx = None
+            self._render_flight_rows()
+            self._flights_status_lbl.configure(
+                text=f"{len(result)} flight(s) on board", text_color=MUTED)
+            self._set_activity(f"{len(result)} flights found", False)
+            self.toast(f"Found {len(result)} flight(s) on board", "ok")
+
+        _run_bg(self, task, done)
+
+    def _render_flight_rows(self):
+        for w in self._flights_list_frame.winfo_children():
+            w.destroy()
+        if not self._flights_on_board:
+            self._lbl(self._flights_list_frame, "No flights found on the board.",
+                      MUTED, 11).pack(pady=18)
+            return
+        for i, f in enumerate(self._flights_on_board):
+            self._build_flight_row(i, f)
+
+    def _build_flight_row(self, idx: int, f: dict):
+        is_sel = self._selected_flight_idx == idx
+        row = ctk.CTkFrame(
+            self._flights_list_frame,
+            fg_color=HOVER if is_sel else FIELD,
+            border_color=TEAL_MID if is_sel else BORDER,
+            border_width=1 if is_sel else 0,
+            corner_radius=12)
+        row.pack(fill="x", padx=6, pady=3)
+        row.bind("<Button-1>", lambda e, i=idx: self._select_flight_row(i))
+
+        self._lbl(row, f"{idx+1:02d}", TEAL, 12, "bold",
+                  width=34).pack(side="left", padx=(12, 4), pady=10)
+        self._lbl(row, f["file"], TEXT, 11, "bold").pack(side="left", padx=4)
+        self._lbl(row, f["size"], MUTED, 10).pack(side="left", padx=6)
+        if f["active"]:
+            ctk.CTkLabel(row, text="ACTIVE", text_color=AMBER, fg_color=AMBER_DIM,
+                         corner_radius=8, padx=8, pady=3,
+                         font=ctk.CTkFont(family=SANS, size=9, weight="bold")).pack(
+                side="right", padx=4)
+        self._btn(row, "Delete", lambda ff=f: self._delete_flight_row(ff),
+                  "danger", 76, 30).pack(side="right", padx=(0, 10))
+        row.bind("<Enter>",
+                 lambda e, r=row: r.configure(fg_color=HOVER))
+        row.bind("<Leave>",
+                 lambda e, r=row, i=idx:
+                 r.configure(fg_color=HOVER if self._selected_flight_idx == i else FIELD))
+
+    def _select_flight_row(self, idx: int):
+        self._selected_flight_idx = idx
+        self._render_flight_rows()
+        f = self._flights_on_board[idx]
+        self._flights_status_lbl.configure(
+            text=f"Selected: {f['file']}  ({f['size']})", text_color=TEAL)
+        self.toast(f"Selected {f['file']}", "info", 1500)
+
+    def _delete_flight_row(self, f: dict):
+        if not self.link:
+            self.toast("Not connected", "warn"); return
+        if not messagebox.askyesno("Delete from device",
+                                   f"Delete {f['file']} from the BOARD?\n\n"
+                                   "Make sure you have already downloaded it!"):
+            return
+        self.toast(f"Deleting {f['file']} from device…", "warn", 0)
+        self._set_activity(f"Deleting {f['file']}…", True)
+        self._monitor_paused = True
+
+        def task():
+            return self.link.delete_flight(f["num"])
+
+        def done(result, err):
+            self._monitor_paused = False
+            if err:
+                self._set_activity("Delete failed", False)
+                self.toast(f"Delete failed: {err}", "error", 0)
+            else:
+                self._set_activity("Flight deleted from device", False)
+                self.toast(f"{f['file']} deleted from board", "ok")
+                self._list_flights()
+
+        _run_bg(self, task, done)
+
+    def _download_selected(self):
+        if not self.link:
+            self.toast("Not connected", "warn"); return
+        if self._selected_flight_idx is None:
+            self.toast("Click a flight row first to select it", "warn")
+            messagebox.showinfo("No selection", "Click a flight row to select it."); return
+        f = self._flights_on_board[self._selected_flight_idx]
+        self._do_download([f["num"]], delete_after=False)
+
+    def _download_all(self):
+        if not self.link:
+            self.toast("Not connected", "warn"); return
+        if not self._flights_on_board:
+            self.toast("List flights first", "warn")
+            messagebox.showinfo("Nothing to download", "List flights first."); return
+        nums = [f["num"] for f in self._flights_on_board if f["num"] is not None]
+        self._do_download(nums, delete_after=True)
+
+    def _do_download(self, nums: list, delete_after=False):
+        self.toast(f"Downloading {len(nums)} flight(s)…", "info", 0)
+        self._set_activity(f"Downloading {len(nums)} flight(s)…", True)
+        self._monitor_paused = True
+
+        def task():
+            saved = []
+            for num in nums:
+                records = self.link.download_flight(num)
+                config_h = (os.path.join(self.repo_path, "include", "config.h")
+                            if self.repo_path else None)
+                category = ("ground_test"
+                            if any(r.get("state_name", "").startswith("GROUND_TEST")
+                                   for r in records)
+                            else "flight")
+                folder = self.store.save_flight(num, records,
+                                                config_h_path=config_h,
+                                                category=category)
+                saved.append(folder)
+                if delete_after and not any(
+                        f["num"] == num and f["active"] for f in self._flights_on_board):
+                    self.link.delete_flight(num)
+            return saved
+
+        def done(result, err):
+            self._monitor_paused = False
+            if err:
+                self._set_activity("Download failed", False)
+                self.toast(f"Download failed: {err}", "error", 0)
+            else:
+                self._set_activity(f"Downloaded {len(result)} flight(s)", False)
+                self.toast(f"Downloaded {len(result)} flight(s) — view in History", "ok")
+                self._log_activity(f"Saved: {result}")
+                self._refresh_history_list()
+                if delete_after:
+                    self._list_flights()
+
+        _run_bg(self, task, done)
+
+    def _delete_from_device(self):
+        if not self.link:
+            self.toast("Not connected", "warn"); return
+        if self._selected_flight_idx is None:
+            self.toast("Click a flight row first", "warn"); return
+        f = self._flights_on_board[self._selected_flight_idx]
+        self._delete_flight_row(f)
+
+    # ================================================================= PRE-FLIGHT PAGE
+    def _build_preflight_page(self):
+        page = ctk.CTkScrollableFrame(
+            self.content, fg_color=BG,
+            scrollbar_fg_color=BG, scrollbar_button_color=FIELD,
+            scrollbar_button_hover_color=HOVER, corner_radius=0)
+        page.grid_columnconfigure(0, weight=1)
+        self._pages["Pre-flight"] = page
+
+        self._section_title(page, "OPERATIONS", "Pre-flight",
+                            "Prepare the vehicle, generate its flight model, build and flash.")
+
+        # Repo card
+        repo_card = self._card(page)
+        repo_card.pack(fill="x", padx=20, pady=(0, 16))
+        repo_card.grid_columnconfigure(1, weight=1)
+        self._lbl(repo_card, "Repository", TEXT, 17, "bold").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=20, pady=(18, 4))
+        self._repo_path_lbl = self._lbl(
+            repo_card, self.repo_path or "No repo selected", MUTED, 11, anchor="w")
+        self._repo_path_lbl.grid(row=1, column=0, columnspan=2, sticky="ew", padx=20,
+                                 pady=(0, 14))
+        self._btn(repo_card, "Choose folder…", self._choose_repo, "secondary", 150).grid(
+            row=1, column=2, padx=20, pady=(0, 14))
+
+        # Launch conditions card
+        lc_card = self._card(page)
+        lc_card.pack(fill="x", padx=20, pady=(0, 16))
+        lc_card.grid_columnconfigure(1, weight=1)
+        self._lbl(lc_card, "Launch conditions", TEXT, 17, "bold").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=20, pady=(18, 4))
+        self._lbl(lc_card,
+                  "Updates coast_table.py, coast_table.h and config.h (MASS/RHO) automatically.",
+                  MUTED, 11).grid(row=1, column=0, columnspan=3, sticky="w",
+                                  padx=20, pady=(0, 14))
+
+        self._cond_entries: dict = {}
+        fields = [
+            ("mass_kg",      "Rocket mass",  "kg"),
+            ("temp_f",       "Temperature",  "°F"),
+            ("humidity_pct", "Humidity",     "%"),
+            ("pressure_hpa", "Pressure",     "hPa"),
+        ]
+        for r_idx, (key, label, unit) in enumerate(fields, 2):
+            self._lbl(lc_card, label, MUTED, 11).grid(
+                row=r_idx, column=0, sticky="w", padx=20, pady=5)
+            ent = ctk.CTkEntry(lc_card, height=36, corner_radius=10,
+                               fg_color=FIELD, border_width=1, border_color=BORDER,
+                               text_color=TEXT, font=ctk.CTkFont(family=MONO, size=11))
+            ent.grid(row=r_idx, column=1, sticky="ew", padx=(8, 8), pady=5)
+            self._lbl(lc_card, unit, SUBTLE, 10).grid(
+                row=r_idx, column=2, sticky="w", padx=(0, 20))
+            self._cond_entries[key] = ent
+
+        self._btn(lc_card, "Generate coast table",
+                  self._run_coast_table, "primary", 200).grid(
+            row=6, column=0, columnspan=3, sticky="ew", padx=20, pady=(12, 20))
+
+        self._load_conditions()
+
+        # Config editor (scrollable)
+        cfg_card = self._card(page)
+        cfg_card.pack(fill="x", padx=20, pady=(0, 16))
+        self._lbl(cfg_card, "config.h editor", TEXT, 17, "bold").pack(
+            anchor="w", padx=20, pady=(18, 4))
+        self._lbl(cfg_card, "Edit firmware parameters directly from here.",
+                  MUTED, 11).pack(anchor="w", padx=20)
+
+        cfg_scroll = ctk.CTkScrollableFrame(
+            cfg_card, height=260, fg_color=SURFACE,
+            scrollbar_fg_color=SURFACE, scrollbar_button_color=FIELD,
+            scrollbar_button_hover_color=HOVER, corner_radius=12)
+        cfg_scroll.pack(fill="x", padx=16, pady=(10, 6))
+        cfg_scroll.grid_columnconfigure(1, weight=1)
+        self._config_scroll = cfg_scroll
+        self._config_fields: dict = {}
+
+        cfg_btns = ctk.CTkFrame(cfg_card, fg_color="transparent")
+        cfg_btns.pack(anchor="w", padx=20, pady=(4, 16))
+        self._btn(cfg_btns, "Reload", self._reload_config_fields, "secondary", 120).pack(
+            side="left", padx=(0, 10))
+        self._btn(cfg_btns, "Save changes", self._save_config_fields, "primary", 140).pack(
+            side="left")
+
+        self._reload_config_fields()
+
+        # Firmware card
+        fw_card = self._card(page)
+        fw_card.pack(fill="x", padx=20, pady=(0, 16))
+        self._lbl(fw_card, "Firmware", TEXT, 17, "bold").pack(
+            anchor="w", padx=20, pady=(18, 4))
+        self._lbl(fw_card,
+                  "Build and flash run in the background — open Details below for live output.",
+                  MUTED, 11).pack(anchor="w", padx=20)
+        fw_btns = ctk.CTkFrame(fw_card, fg_color="transparent")
+        fw_btns.pack(anchor="w", padx=20, pady=(12, 20))
+        self._btn(fw_btns, "Build firmware",   self._run_build,           "secondary", 160).pack(side="left", padx=(0, 10))
+        self._btn(fw_btns, "Flash to board",   self._run_upload,          "primary",   160).pack(side="left", padx=(0, 10))
+        self._btn(fw_btns, "Pre-flight check", self._run_preflight_check, "secondary", 160).pack(side="left")
+
+        self._build_activity_widget(page)
+
+    # ---- Config editor helpers ----
+    def _reload_config_fields(self):
+        for w in self._config_scroll.winfo_children():
+            w.destroy()
+        self._config_fields = {}
+        if not self.repo_path:
+            self._lbl(self._config_scroll, "Set a repo folder first.", MUTED, 11).pack(pady=12)
+            return
+        cfg_h = os.path.join(self.repo_path, "include", "config.h")
+        if not os.path.exists(cfg_h):
+            self._lbl(self._config_scroll, f"config.h not found at {cfg_h}", RED, 11).pack(pady=12)
+            return
+        try:
+            import config_editor
+            self._config_h_path = cfg_h
+            self._current_config = config_editor.ConfigFile(cfg_h)
+            for r_idx, field in enumerate(self._current_config.fields):
+                color = SUBTLE if field.is_auto_generated else MUTED
+                self._lbl(self._config_scroll, field.name, color, 10).grid(
+                    row=r_idx, column=0, sticky="w", padx=(12, 8), pady=3)
+                var = tk.StringVar(value=field.value)
+                ent = ctk.CTkEntry(
+                    self._config_scroll, textvariable=var, height=30,
+                    corner_radius=8, fg_color=FIELD, border_width=1,
+                    border_color=BORDER, text_color=TEXT,
+                    font=ctk.CTkFont(family=MONO, size=10), width=120)
+                ent.grid(row=r_idx, column=1, sticky="ew", padx=(0, 8), pady=3)
+                if field.comment:
+                    self._lbl(self._config_scroll, field.comment, SUBTLE, 9).grid(
+                        row=r_idx, column=2, sticky="w", padx=(0, 12))
+                self._config_fields[field.name] = var
+            self.toast("config.h loaded", "info", 1500)
+        except Exception as err:
+            self._lbl(self._config_scroll, f"Error loading config.h: {err}", RED, 10).pack(pady=12)
+            self.toast(f"Could not load config.h: {err}", "error", 0)
+
+    def _save_config_fields(self):
+        if not getattr(self, "_current_config", None):
+            self.toast("Load config.h first", "warn"); return
+        for name, var in self._config_fields.items():
+            self._current_config.set_value(name, var.get())
+        self._current_config.save()
+        self._log_activity(f"Saved {self._config_h_path}")
+        self.toast("config.h saved — rebuild + flash to apply", "ok")
+
+    # ---- Pre-flight actions ----
+    def _load_conditions(self):
+        d = self.cfg.get("last_launch_conditions", {})
+        for key, ent in self._cond_entries.items():
+            val = d.get(key, "")
+            if val:
+                ent.delete(0, "end")
+                ent.insert(0, str(val))
+
+    def _run_coast_table(self):
+        if not self.repo_path:
+            self.toast("Set a repo folder first", "warn")
+            messagebox.showwarning("No repo", "Choose the repo folder first."); return
+        try:
+            vals = [float(self._cond_entries[k].get())
+                    for k in ("mass_kg", "temp_f", "humidity_pct", "pressure_hpa")]
+        except ValueError:
+            self.toast("All condition fields must be numbers", "error")
+            messagebox.showerror("Invalid", "All launch-condition fields must be numbers."); return
+        self.toast("Generating coast table…", "info", 0)
+        self._set_activity("Generating coast table…", True)
+
+        def on_line(line):
+            self.after(0, lambda l=line: self._log_activity(l))
+
+        def task():
+            return coast_table_tool.regenerate(self.repo_path, *vals, on_line=on_line)
+
+        def done(result, err):
+            if err:
+                self._set_activity("Coast table failed", False)
+                self.toast(f"Coast table failed: {err}", "error", 0)
+                self._log_activity(f"Error: {err}")
+            else:
+                self.cfg["last_launch_conditions"] = dict(
+                    zip(("mass_kg", "temp_f", "humidity_pct", "pressure_hpa"), vals))
+                save_config(self.cfg)
+                self._coast_table_cache = None
+                self._set_activity("Coast table generated", False)
+                self.toast("Coast table generated — rebuild + flash to apply", "ok")
+
+        _run_bg(self, task, done)
+
+    def _run_build(self):
+        if not self.repo_path:
+            self.toast("Set a repo folder first", "warn"); return
+        if not firmware.check_platformio_installed():
+            self.toast("PlatformIO not found — install it first", "error")
+            messagebox.showerror("PlatformIO", "Install PlatformIO then retry."); return
+        self.toast("Building firmware…", "info", 0)
+        self._set_activity("Building firmware…", True)
+        self._log_activity("$ pio run")
+
+        def on_line(l):
+            self.after(0, lambda line=l: self._log_activity(line))
+
+        def on_exit(code):
+            def finish():
+                if code == 0:
+                    self._set_activity("Build succeeded", False)
+                    self.toast("Firmware build succeeded", "ok")
+                else:
+                    self._set_activity(f"Build failed (exit {code})", False)
+                    self.toast(f"Build failed — exit code {code}", "error", 0)
+                self._log_activity(f"[exited with code {code}]")
+            self.after(0, finish)
+
+        firmware.build_firmware(self.repo_path, on_line=on_line, on_exit=on_exit)
+
+    def _run_upload(self):
+        if not self.repo_path:
+            self.toast("Set a repo folder first", "warn"); return
+        if not firmware.check_platformio_installed():
+            self.toast("PlatformIO not found — install it first", "error")
+            messagebox.showerror("PlatformIO", "Install PlatformIO then retry."); return
+        reconnect_port = self._last_port
+        if self.link:
+            self._log_activity("Closing serial link so PlatformIO can claim the USB port…")
+            try:
+                self.link.close()
+            except Exception:
+                pass
+            self.link = None
+            self._conn_dot.configure(text="●  FLASHING", text_color=AMBER)
+            self._conn_hint.configure(text="Port released for upload")
+        self.toast("Flashing firmware…", "warn", 0)
+        self._set_activity("Flashing firmware…", True)
+        self._log_activity("$ pio run -t upload")
+
+        def on_line(l):
+            self.after(0, lambda line=l: self._log_activity(line))
+
+        def on_exit(code):
+            def finish():
+                if code == 0:
+                    self._set_activity("Flash succeeded", False)
+                    self.toast("Firmware flashed successfully", "ok")
+                    if reconnect_port:
+                        self._log_activity("Waiting for board to reboot…")
+                        self._reconnect_after_upload(reconnect_port)
+                else:
+                    self._set_activity(f"Flash failed (exit {code})", False)
+                    self.toast(f"Flash failed — exit code {code}", "error", 0)
+                self._log_activity(f"[exited with code {code}]")
+            self.after(0, finish)
+
+        firmware.upload_firmware(self.repo_path, on_line=on_line, on_exit=on_exit)
+
+    def _run_preflight_check(self):
+        port = self._last_port or serial_link.find_board()
+        if not self.link and not port:
+            self.toast("No board found — connect first", "warn")
+            messagebox.showinfo("Not connected",
+                                "Connect from the Board page first, then retry."); return
+        self.toast("Sending INFO to board…", "info", 2000)
+        self._set_activity("Pre-flight check…", True)
+        self._monitor_paused = True
+
+        if self.link:
+            def task():
+                return self.link.get_info()
+        else:
+            def task():
+                tmp = serial_link.FlightComputerLink(port)
+                try:
+                    return tmp, tmp.get_info()
+                except Exception:
+                    tmp.close()
+                    raise
+
+        def done(result, err):
+            self._monitor_paused = False
+            if err:
+                self._set_activity("Pre-flight check failed", False)
+                self.toast(f"Pre-flight check failed: {err}", "error", 0)
+                self._log_activity(f"Error: {err}")
+            else:
+                if isinstance(result, tuple):
+                    self.link, info = result
+                    self._last_port = port
+                else:
+                    info = result
+                self._set_activity("Pre-flight check passed", False)
+                self.toast(f"Board OK — {info}", "ok")
+                self._log_activity(f"Storage: {info}")
+                self._conn_dot.configure(text="●  CONNECTED", text_color=TEAL)
+                self._conn_hint.configure(text=f"Connected on {self._last_port or port}")
+
+        _run_bg(self, task, done)
+
+    # ================================================================= GROUND TEST PAGE
+    def _build_ground_test_page(self):
+        page = ctk.CTkScrollableFrame(
+            self.content, fg_color=BG,
+            scrollbar_fg_color=BG, scrollbar_button_color=FIELD,
+            scrollbar_button_hover_color=HOVER, corner_radius=0)
+        page.grid_columnconfigure(0, weight=1)
+        self._pages["Ground test"] = page
+
+        self._section_title(page, "HARDWARE", "Ground test",
+                            "Arm a shake-triggered sensor recording and airbrake sweep.")
+
+        gt_card = self._card(page)
+        gt_card.pack(fill="x", padx=20, pady=(0, 16))
+        self._lbl(gt_card, "Airbrake ground test", TEXT, 17, "bold").pack(
+            anchor="w", padx=20, pady=(18, 4))
+        self._lbl(gt_card,
+                  "Arms a shake-triggered 15 s sensor log and slow close → open → close sweep.\n"
+                  "Keep clear of the mechanism during the test.",
+                  MUTED, 11, wraplength=860, justify="left").pack(anchor="w", padx=20)
+        gt_btns = ctk.CTkFrame(gt_card, fg_color="transparent")
+        gt_btns.pack(anchor="w", padx=20, pady=(12, 8))
+        self._btn(gt_btns, "Arm ground test",  self._gt_start,  "primary",   160).pack(side="left", padx=(0, 10))
+        self._btn(gt_btns, "Abort / close",    self._gt_abort,  "danger",    160).pack(side="left", padx=(0, 10))
+        self._btn(gt_btns, "Check status",     self._gt_status, "secondary", 140).pack(side="left", padx=(0, 10))
+        self._btn(gt_btns, "Check DPS368",     self._gt_baro,   "quiet",     130).pack(side="left")
+
+        self._gt_status_lbl = self._lbl(gt_card, "Connect to arm a test.", MUTED, 11)
+        self._gt_status_lbl.pack(anchor="w", padx=20, pady=(4, 18))
+
+        self._build_monitor_widget(page)
+        self._build_activity_widget(page)
+
+    # ---- Ground test actions ----
+    def _gt_start(self):
+        if not self.link:
+            self.toast("Not connected", "warn")
+            messagebox.showwarning("Not connected", "Connect first."); return
+        if not messagebox.askyesno("Arm ground test",
+                                   "Keep clear of the airbrakes.\n"
+                                   "Shake to trigger. Continues for 15 s then sweeps brakes.\n\n"
+                                   "Continue?"):
+            return
+        self.toast("Arming ground test…", "warn", 0)
+        self._gt_command(self.link.ground_test_start, "Arming ground test")
+
+    def _gt_abort(self):
+        if not self.link:
+            self.toast("Not connected", "warn"); return
+        self.toast("Aborting ground test…", "warn", 0)
+        self._gt_command(self.link.ground_test_abort, "Aborting ground test")
+
+    def _gt_status(self):
+        if not self.link:
+            self.toast("Not connected", "warn"); return
+        self.toast("Checking ground test status…", "info", 2000)
+        self._gt_command(self.link.ground_test_status, "Checking status")
+
+    def _gt_baro(self):
+        if not self.link:
+            self.toast("Not connected", "warn"); return
+        self.toast("Checking DPS368…", "info", 2000)
+        self._set_activity("Checking DPS368…", True)
+        self._monitor_paused = True
+
+        def task():
+            return self.link.baro_status()
+
+        def done(result, err):
+            self._monitor_paused = False
+            if err:
+                self._set_activity("DPS368 check failed", False)
+                self._gt_status_lbl.configure(text=str(err), text_color=RED)
+                self.toast(f"DPS368 failed: {err}", "error", 0)
+            else:
+                self._set_activity("DPS368 OK", False)
+                self._gt_status_lbl.configure(text=str(result), text_color=TEAL)
+                self._append_monitor(result, "state")
+                self.toast(f"DPS368: {result}", "ok")
+
+        _run_bg(self, task, done)
+
+    def _gt_command(self, cmd, label):
+        self._monitor_paused = True
+        self._gt_status_lbl.configure(text=f"{label}…", text_color=AMBER)
+        self._set_activity(label, True)
+
+        def task():
+            return cmd()
+
+        def done(result, err):
+            self._monitor_paused = False
+            if err:
+                self._gt_status_lbl.configure(text=str(err), text_color=RED)
+                self._set_activity(f"{label} failed", False)
+                self.toast(f"{label} failed: {err}", "error", 0)
+            else:
+                self._gt_status_lbl.configure(text=str(result), text_color=TEAL)
+                self._set_activity(f"{label} done", False)
+                self.toast(f"{label} complete", "ok")
+                self._log_activity(str(result))
+
+        _run_bg(self, task, done)
+
+    # ================================================================= HISTORY PAGE
+    def _build_history_page(self):
+        page = ctk.CTkFrame(self.content, fg_color=BG, corner_radius=0)
+        page.grid_columnconfigure(0, weight=0)
+        page.grid_columnconfigure(1, weight=1)
+        page.grid_rowconfigure(0, weight=1)
+        self._pages["History"] = page
+
+        # Left panel
+        left = ctk.CTkScrollableFrame(
+            page, width=320, fg_color=SIDEBAR,
+            scrollbar_fg_color=SIDEBAR, scrollbar_button_color=FIELD,
+            scrollbar_button_hover_color=HOVER, corner_radius=0)
+        left.grid(row=0, column=0, sticky="nsew")
+        left.grid_columnconfigure(0, weight=1)
+
+        lhdr = ctk.CTkFrame(left, fg_color="transparent")
+        lhdr.grid(row=0, column=0, sticky="ew", padx=14, pady=(20, 8))
+        self._lbl(lhdr, "SAVED FLIGHTS", TEAL, 9, "bold").pack(side="left")
+        self._btn(lhdr, "Refresh", self._refresh_history_list, "quiet", 76, 28).pack(
+            side="right")
+
+        self._hist_list_inner = ctk.CTkFrame(left, fg_color="transparent")
+        self._hist_list_inner.grid(row=1, column=0, sticky="ew")
+
+        del_row = ctk.CTkFrame(left, fg_color="transparent")
+        del_row.grid(row=2, column=0, sticky="ew", padx=14, pady=(12, 6))
+        self._btn(del_row, "Delete all local", self._delete_all_local, "danger", 140, 32).pack(
+            anchor="w")
+
+        ddir_row = ctk.CTkFrame(left, fg_color="transparent")
+        ddir_row.grid(row=3, column=0, sticky="ew", padx=14, pady=(0, 20))
+        self._btn(ddir_row, "Change data folder", self._choose_data_dir, "quiet", 160, 30).pack(
+            anchor="w")
+
+        # Right panel
+        right = ctk.CTkFrame(page, fg_color=BG, corner_radius=0)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(1, weight=1)
+
+        rh = ctk.CTkFrame(right, fg_color=BG)
+        rh.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 8))
+        rh.grid_columnconfigure(0, weight=1)
+        self._hist_title = self._lbl(rh, "Select a flight to inspect it", TEXT, 20, "bold")
+        self._hist_title.grid(row=0, column=0, sticky="w")
+
+        # Tab bar
+        tab_bar = ctk.CTkFrame(rh, fg_color=SURFACE2, corner_radius=10)
+        tab_bar.grid(row=0, column=1, sticky="e")
+        self._hist_tab_btns = {}
+        for tname in ("Stats", "Plots", "Data table"):
+            tb = ctk.CTkButton(
+                tab_bar, text=tname, width=100, height=30, corner_radius=8,
+                fg_color=TEAL_DIM if tname == "Plots" else "transparent",
+                hover_color=FIELD,
+                text_color=TEXT if tname == "Plots" else MUTED,
+                font=ctk.CTkFont(family=SANS, size=11, weight="bold"),
+                command=lambda n=tname: self._switch_hist_tab(n))
+            tb.pack(side="left", padx=3, pady=3)
+            self._hist_tab_btns[tname] = tb
+
+        self._hist_content = ctk.CTkFrame(right, fg_color=BG, corner_radius=0)
+        self._hist_content.grid(row=1, column=0, sticky="nsew")
+        self._hist_content.grid_columnconfigure(0, weight=1)
+        self._hist_content.grid_rowconfigure(0, weight=1)
+
+        self._build_hist_stats_panel()
+        self._build_hist_plots_panel()
+        self._build_hist_table_panel()
+        self._switch_hist_tab("Plots")
+        self._refresh_history_list()
+
+    # ---- History sub-panels ----
+    def _build_hist_stats_panel(self):
+        self._hist_stats_panel = ctk.CTkScrollableFrame(
+            self._hist_content, fg_color=BG,
+            scrollbar_fg_color=BG, scrollbar_button_color=FIELD,
+            scrollbar_button_hover_color=HOVER, corner_radius=0)
+        self._hist_stats_panel.grid_columnconfigure(0, weight=1)
+        self._hist_stats_card = self._card(self._hist_stats_panel)
+        self._hist_stats_card.pack(fill="x", padx=20, pady=20)
+        self._lbl(self._hist_stats_card, "Select a flight to view stats",
+                  MUTED, 13).pack(padx=24, pady=40)
+
+    def _build_hist_plots_panel(self):
+        self._hist_plots_panel = ctk.CTkFrame(
+            self._hist_content, fg_color=BG, corner_radius=0)
+        self._hist_plots_panel.grid_columnconfigure(0, weight=1)
+        self._hist_plots_panel.grid_rowconfigure(1, weight=1)
+
+        # Plot selector chip bar
+        sel_row = ctk.CTkFrame(self._hist_plots_panel, fg_color=SURFACE2, corner_radius=10)
+        sel_row.grid(row=0, column=0, sticky="ew", padx=20, pady=(16, 6))
+        self._lbl(sel_row, "Plot:", MUTED, 11).pack(side="left", padx=(14, 8), pady=8)
+        self._plot_choice = tk.StringVar(value=plotting.ALL_PLOTS[0][0])
+        self._plot_btns = {}
+        for pname, _ in plotting.ALL_PLOTS:
+            pb = ctk.CTkButton(
+                sel_row, text=pname, height=28, width=0, corner_radius=8,
+                fg_color=TEAL_DIM if pname == plotting.ALL_PLOTS[0][0] else "transparent",
+                hover_color=HOVER,
+                text_color=TEXT if pname == plotting.ALL_PLOTS[0][0] else MUTED,
+                font=ctk.CTkFont(family=SANS, size=10, weight="bold"),
+                command=lambda n=pname: self._select_plot(n))
+            pb.pack(side="left", padx=3, pady=6)
+            self._plot_btns[pname] = pb
+
+        # Canvas host
+        self._plot_host = ctk.CTkFrame(
+            self._hist_plots_panel, fg_color=SURFACE, corner_radius=16)
+        self._plot_host.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 16))
+        self._plot_host.grid_columnconfigure(0, weight=1)
+        self._plot_host.grid_rowconfigure(0, weight=1)
+        self._lbl(self._plot_host, "Select a flight from the left to plot it",
+                  MUTED, 13).grid(row=0, column=0)
+        self._plot_canvas_widget  = None
+        self._plot_toolbar_widget = None
+
+    def _build_hist_table_panel(self):
+        self._hist_table_panel = ctk.CTkFrame(
+            self._hist_content, fg_color=BG, corner_radius=0)
+        self._hist_table_panel.grid_columnconfigure(0, weight=1)
+        self._hist_table_panel.grid_rowconfigure(1, weight=1)
+
+        ctrl = ctk.CTkFrame(self._hist_table_panel, fg_color="transparent")
+        ctrl.grid(row=0, column=0, sticky="ew", padx=20, pady=(16, 6))
+        self._table_info_lbl = self._lbl(ctrl, "Select a flight to view its data", MUTED, 11)
+        self._table_info_lbl.pack(side="left")
+        self._btn(ctrl, "Export CSV", self._export_csv, "secondary", 110, 30).pack(
+            side="right")
+
+        table_host = ctk.CTkFrame(
+            self._hist_table_panel, fg_color=SURFACE, corner_radius=16)
+        table_host.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 16))
+        table_host.grid_columnconfigure(0, weight=1)
+        table_host.grid_rowconfigure(0, weight=1)
+
+        self._table_canvas = tk.Canvas(table_host, bg=SURFACE, highlightthickness=0)
+        vsb = ctk.CTkScrollbar(table_host, orientation="vertical",
+                                command=self._table_canvas.yview,
+                                fg_color=SURFACE, button_color=FIELD,
+                                button_hover_color=HOVER)
+        hsb = ctk.CTkScrollbar(table_host, orientation="horizontal",
+                                command=self._table_canvas.xview,
+                                fg_color=SURFACE, button_color=FIELD,
+                                button_hover_color=HOVER)
+        self._table_canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        self._table_canvas.grid(row=0, column=0, sticky="nsew")
+
+        self._table_inner = tk.Frame(self._table_canvas, bg=SURFACE)
+        self._table_canvas.create_window((0, 0), window=self._table_inner, anchor="nw")
+        self._table_inner.bind(
+            "<Configure>",
+            lambda e: self._table_canvas.configure(
+                scrollregion=self._table_canvas.bbox("all")))
+
+    def _switch_hist_tab(self, name: str):
+        panels = {
+            "Stats":      self._hist_stats_panel,
+            "Plots":      self._hist_plots_panel,
+            "Data table": self._hist_table_panel,
+        }
+        for pname, pframe in panels.items():
+            if pname == name:
+                pframe.grid(row=0, column=0, sticky="nsew")
+            else:
+                pframe.grid_remove()
+        for tname, tbtn in self._hist_tab_btns.items():
+            active = tname == name
+            tbtn.configure(
+                fg_color=TEAL_DIM if active else "transparent",
+                text_color=TEXT if active else MUTED)
+
+    # ---- History list ----
+    def _refresh_history_list(self):
+        self._history_entries = self.store.list_flights()
+        for w in self._hist_list_inner.winfo_children():
+            w.destroy()
+        if not self._history_entries:
+            self._lbl(self._hist_list_inner, "No saved flights yet", MUTED, 12).pack(
+                anchor="center", pady=8)
+            self._lbl(self._hist_list_inner,
+                      "Download a flight from the\nBoard page first.",
+                      SUBTLE, 10, justify="center").pack(anchor="center")
+            return
+
+        flights = [e for e in self._history_entries if e.get("category") == "flight"]
+        tests   = [e for e in self._history_entries if e.get("category") == "ground_test"]
+        others  = [e for e in self._history_entries
+                   if e not in flights and e not in tests]
+
+        for section_label, entries, color in (
+            ("Flights",      flights, TEAL),
+            ("Ground tests", tests,   AMBER),
+            ("Other",        others,  BLUE),
+        ):
+            if not entries:
+                continue
+            self._lbl(self._hist_list_inner, section_label.upper(),
+                      SUBTLE, 9, "bold").pack(anchor="w", padx=14, pady=(14, 4))
+            for entry in entries:
+                self._build_history_row(entry, color)
+
+    def _build_history_row(self, entry: dict, color=TEAL):
+        folder = entry.get("folder", "")
+        is_sel = (self._selected_history_entry is not None and
+                  self._selected_history_entry.get("folder") == folder)
+
+        row = ctk.CTkFrame(
+            self._hist_list_inner,
+            fg_color=HOVER if is_sel else FIELD,
+            border_color=TEAL_MID if is_sel else BORDER,
+            border_width=1 if is_sel else 0,
+            corner_radius=12)
+        row.pack(fill="x", padx=10, pady=3)
+
+        top = ctk.CTkFrame(row, fg_color="transparent")
+        top.pack(fill="x", padx=10, pady=(8, 2))
+
+        num = entry.get("flight_num", "?")
+        badge = f"FLIGHT {num:04d}" if isinstance(num, int) else f"FLIGHT {num}"
+        ctk.CTkLabel(top, text=badge, text_color=color,
+                     fg_color=TEAL_DIM if color == TEAL else AMBER_DIM,
+                     corner_radius=8, padx=8, pady=3,
+                     font=ctk.CTkFont(family=SANS, size=9, weight="bold")).pack(side="left")
+
+        dur = entry.get("duration_s", 0)
+        alt = entry.get("max_altitude_m")
+        alt_str = f"{alt:.0f} m" if alt is not None else "?"
+        self._lbl(top, f"{dur:.1f}s  ·  {alt_str}", MUTED, 9).pack(side="right", padx=(0, 4))
+
+        ts = entry.get("downloaded_at", "")
+        display_ts = ts[:19].replace("_", " ") if ts else "Unknown"
+        self._lbl(row, display_ts, SUBTLE, 9).pack(anchor="w", padx=10, pady=(0, 6))
+
+        # Per-row delete
+        del_btn = self._btn(row, "Delete", lambda e=entry: self._delete_local(e),
+                            "danger", 70, 26)
+        del_btn.place(relx=1.0, x=-8, rely=0.0, y=6, anchor="ne")
+
+        # Click anywhere on the row to select it
+        for widget in [row, top, del_btn]:
+            try:
+                widget.bind("<Button-1>", lambda ev, e=entry: self._select_history_entry(e))
+            except Exception:
+                pass
+        row.bind("<Enter>", lambda ev, r=row: r.configure(fg_color=HOVER))
+        row.bind("<Leave>", lambda ev, r=row, e=entry:
+                 r.configure(fg_color=HOVER if (
+                     self._selected_history_entry is not None and
+                     self._selected_history_entry.get("folder") == e.get("folder")
+                 ) else FIELD))
+
+    def _select_history_entry(self, entry: dict):
+        self._selected_history_entry = entry
+        self._refresh_history_list()
+        num = entry.get("flight_num", "?")
+        cat = entry.get("category", "flight").replace("_", " ").title()
+        self._hist_title.configure(text=f"{cat}  {num}")
+        self.toast(f"Viewing {cat} {num}", "info", 1500)
+        self._render_stats(entry)
+        self._render_active_plot()
+        self._render_table(entry)
+
+    def _delete_local(self, entry: dict):
+        folder = entry.get("folder", "")
+        if messagebox.askyesno("Delete local",
+                               f"Delete {folder} from this computer?\n"
+                               "(This does not affect the board.)"):
+            self.store.delete_local(folder)
+            if (self._selected_history_entry is not None and
+                    self._selected_history_entry.get("folder") == folder):
+                self._selected_history_entry = None
+            self._refresh_history_list()
+            self.toast(f"{folder} deleted locally", "ok")
+
+    def _delete_all_local(self):
+        if messagebox.askyesno("Delete all local data",
+                               "Delete every saved flight and ground test from this computer?\n"
+                               "This does NOT affect the board."):
+            self.store.delete_all_local()
+            self._selected_history_entry = None
+            self._refresh_history_list()
+            self.toast("All local flight data deleted", "ok")
+
+    # ---- Stats ----
+    def _render_stats(self, entry: dict):
+        for w in self._hist_stats_card.winfo_children():
+            w.destroy()
+        self._lbl(self._hist_stats_card, "Flight summary", TEXT, 16, "bold").pack(
+            anchor="w", padx=22, pady=(18, 10))
+
+        stats = [
+            ("Flight number", str(entry.get("flight_num", "?"))),
+            ("Downloaded",    entry.get("downloaded_at", "?")[:19].replace("_", " ")),
+            ("Duration",      f"{entry.get('duration_s', 0):.2f} s"),
+            ("Records",       str(entry.get("num_records", "?"))),
+            ("Max altitude",  (f"{entry['max_altitude_m']:.1f} m"
+                               if entry.get("max_altitude_m") is not None else "N/A")),
+            ("Category",      entry.get("category", "flight").replace("_", " ").title()),
+            ("Folder",        entry.get("folder", "?")),
+        ]
+        try:
+            df = pd.read_csv(entry["csv_path"])
+            stats.insert(5, ("Max velocity", f"{df['velocity_ms'].max():.1f} m/s"))
+        except Exception:
+            pass
+
+        for label, val in stats:
+            r = ctk.CTkFrame(self._hist_stats_card, fg_color=FIELD, corner_radius=10)
+            r.pack(fill="x", padx=16, pady=3)
+            self._lbl(r, label, MUTED, 11).pack(side="left", padx=14, pady=8)
+            self._lbl(r, val,   TEXT,  11, "bold").pack(side="right", padx=14, pady=8)
+
+        ctk.CTkFrame(self._hist_stats_card, height=1, fg_color=BORDER).pack(
+            fill="x", padx=16, pady=8)
+        self._lbl(self._hist_stats_card,
+                  f"CSV path: {entry.get('csv_path', '?')}",
+                  SUBTLE, 9).pack(anchor="w", padx=22, pady=(0, 16))
+
+    # ---- Plots ----
+    def _select_plot(self, name: str):
+        self._plot_choice.set(name)
+        for pname, pbtn in self._plot_btns.items():
+            active = pname == name
+            pbtn.configure(
+                fg_color=TEAL_DIM if active else "transparent",
+                text_color=TEXT if active else MUTED)
+        self._render_active_plot()
+
+    def _render_active_plot(self):
+        if self._selected_history_entry is None:
+            return
+        entry = self._selected_history_entry
+        try:
+            df = pd.read_csv(entry["csv_path"])
+        except Exception as err:
+            self.toast(f"Could not load CSV: {err}", "error", 0); return
+
+        name = self._plot_choice.get()
+        plot_fn = dict(plotting.ALL_PLOTS).get(name)
+        if plot_fn is None:
+            return
+
+        if plot_fn is plotting.plot_coast_predicted_vs_actual:
+            cached = self._get_coast_table()
+            fig = (plot_fn(df, *cached) if cached else plot_fn(df))
+        else:
+            fig = plot_fn(df)
+
+        # Theme the figure to match the dark UI
+        plot_bg = "#0e1820"
+        ax_bg   = "#111d2a"
+        fig.patch.set_facecolor(plot_bg)
+        for ax in fig.get_axes():
+            ax.set_facecolor(ax_bg)
+            ax.tick_params(colors=MUTED, labelsize=9)
+            ax.xaxis.label.set_color(MUTED)
+            ax.yaxis.label.set_color(MUTED)
+            ax.title.set_color(TEXT)
+            for spine in ax.spines.values():
+                spine.set_color(BORDER)
+            ax.grid(True, color=BORDER, alpha=0.5)
+        fig.tight_layout(pad=2.0)
+
+        # Clear previous canvas + toolbar
+        if self._plot_canvas_widget:
+            try:
+                self._plot_canvas_widget.get_tk_widget().destroy()
+            except Exception:
+                pass
+        if self._plot_toolbar_widget:
+            try:
+                self._plot_toolbar_widget.destroy()
+            except Exception:
+                pass
+        for w in self._plot_host.winfo_children():
+            w.destroy()
+
+        # Embed canvas
+        canvas = FigureCanvasTkAgg(fig, master=self._plot_host)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=4, pady=(4, 0))
+
+        # Embed NavigationToolbar2Tk (zoom / pan / save built-in)
+        tb_host = tk.Frame(self._plot_host, bg=ax_bg)
+        tb_host.pack(fill="x", padx=4, pady=(0, 4))
+        toolbar = NavigationToolbar2Tk(canvas, tb_host)
+        toolbar.configure(background=ax_bg)
+        for child in toolbar.winfo_children():
+            try:
+                child.configure(background=ax_bg, foreground=TEXT)
+            except Exception:
+                pass
+        toolbar.update()
+
+        self._plot_canvas_widget  = canvas
+        self._plot_toolbar_widget = toolbar
+        plt.close(fig)
+
+    # ---- Data table ----
+    def _render_table(self, entry: dict):
+        for w in self._table_inner.winfo_children():
+            w.destroy()
+        try:
+            with open(entry["csv_path"], newline="", encoding="utf-8") as f:
+                rows = list(_csv.reader(f))
+        except Exception as err:
+            self.toast(f"Could not load CSV: {err}", "error", 0); return
+        if not rows:
+            return
+
+        n_data = len(rows) - 1
+        n_cols = len(rows[0]) if rows else 0
+        self._table_info_lbl.configure(
+            text=f"{n_data} records  ·  {n_cols} columns")
+
+        HDR_BG = SURFACE2
+        HDR_FG = TEAL
+        ROW_BG = SURFACE
+        ALT_BG = CARD
+        COL_W  = 11          # chars
+
+        for c, col in enumerate(rows[0]):
+            tk.Label(self._table_inner, text=col, anchor="w",
+                     width=COL_W, bg=HDR_BG, fg=HDR_FG,
+                     font=(MONO, 9, "bold"),
+                     borderwidth=0, padx=4, pady=4).grid(
+                row=0, column=c, sticky="ew", padx=1, pady=1)
+
+        MAX_ROWS = 2000
+        for r, data_row in enumerate(rows[1:MAX_ROWS + 1], 1):
+            bg = ALT_BG if r % 2 == 0 else ROW_BG
+            for c, val in enumerate(data_row):
+                tk.Label(self._table_inner, text=val, anchor="e",
+                         width=COL_W, bg=bg, fg=TEXT,
+                         font=(MONO, 9),
+                         borderwidth=0, padx=4, pady=2).grid(
+                    row=r, column=c, sticky="ew", padx=1, pady=0)
+
+        if n_data > MAX_ROWS:
+            tk.Label(self._table_inner,
+                     text=f"Showing first {MAX_ROWS} of {n_data} rows",
+                     bg=SURFACE, fg=MUTED,
+                     font=(SANS, 9)).grid(
+                row=MAX_ROWS + 1, column=0, columnspan=n_cols, pady=8, sticky="w")
+
+        self._table_canvas.update_idletasks()
+        self._table_canvas.configure(
+            scrollregion=self._table_canvas.bbox("all"))
+
+    def _export_csv(self):
+        if self._selected_history_entry is None:
+            self.toast("Select a flight first", "warn"); return
+        src = self._selected_history_entry.get("csv_path", "")
+        if not os.path.isfile(src):
+            self.toast("CSV file not found", "error"); return
+        dest = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile=os.path.basename(src))
+        if dest:
+            shutil.copy2(src, dest)
+            self.toast(f"Exported to {dest}", "ok")
+
+    # ---- Coast table cache ----
+    def _get_coast_table(self):
+        if self._coast_table_cache is not None:
+            return self._coast_table_cache
+        if not self.repo_path:
+            return None
+        try:
+            self._coast_table_cache = coast_lookup.load_coast_table(self.repo_path)
+        except Exception as err:
+            self._log_activity(f"Could not load coast table for plotting: {err}")
+            self._coast_table_cache = None
+        return self._coast_table_cache
+
+
+if __name__ == "__main__":
+    App().mainloop()
