@@ -7,6 +7,7 @@ FigureCanvasTkAgg. Nothing here talks to Tkinter directly.
 """
 
 import matplotlib
+import pandas as pd
 from matplotlib.figure import Figure
 
 # Matches the app's ttkbootstrap "superhero" theme so embedded plots don't
@@ -52,10 +53,12 @@ def _fig(title, xlabel, ylabel):
 
 def plot_altitude_velocity(df):
     fig, ax1 = _fig("Altitude & Velocity vs Time", "Time (s)", "Altitude (m)")
-    t = df["time_ms"] / 1000.0
-    ax1.plot(t, df["altitude_m"], color="tab:blue", label="Altitude")
+    t = pd.to_numeric(df["time_ms"], errors="coerce") / 1000.0
+    altitude = pd.to_numeric(df["altitude_m"], errors="coerce")
+    velocity = pd.to_numeric(df["velocity_ms"], errors="coerce")
+    ax1.plot(t, altitude, color="tab:blue", label="Altitude")
     ax2 = ax1.twinx()
-    ax2.plot(t, df["velocity_ms"], color="tab:orange", label="Velocity", alpha=0.8)
+    ax2.plot(t, velocity, color="tab:orange", label="Velocity", alpha=0.8)
     ax2.set_ylabel("Velocity (m/s)")
     lines = ax1.get_lines() + ax2.get_lines()
     ax1.legend(lines, [l.get_label() for l in lines], loc="best")

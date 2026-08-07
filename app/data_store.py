@@ -1,6 +1,7 @@
-﻿I"""Persistent local storage for downloaded flights and ground tests."""
+﻿"""Persistent local storage for downloaded flights and ground tests."""
 import csv, hashlib, json, os, shutil
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from serial_link import FIELD_NAMES
 
 class DataStore:
@@ -29,11 +30,14 @@ class DataStore:
 
     def save_flight(self, flight_num, records, config_h_path=None, notes="", category=None):
         fingerprint = self._records_fingerprint(records)
-        for entry in self._read_index():
-            if entry.get("fingerprint") == fingerprint:
-                folder = os.path.join(self.root, entry.get("folder", ""))
-                if os.path.isdir(folder): return folder
         category = category or ("ground_test" if any(r.get("state_name", "").startswith("GROUND_TEST") for r in records) else "flight")
+        # A repeated ground test can legitimately contain identical samples;
+        # every download must receive its own local sequence number.
+        if category != "ground_test":
+            for entry in self._read_index():
+                if entry.get("fingerprint") == fingerprint:
+                    folder = os.path.join(self.root, entry.get("folder", ""))
+                    if os.path.isdir(folder): return folder
         # The board number is a device slot (often 0000/0001), not a unique
         # local flight ID.  Use a monotonic local sequence for readable names.
         used = []
@@ -44,14 +48,19 @@ class DataStore:
                 except (IndexError, ValueError):
                     pass
         local_num = max(used, default=0) + 1
-        folder_name = f"{category}_{local_num:04d}_{datetime.now().strftime('%Y-%m-%d_%H%M%S_%f')}"
+        folder_name = f"{category}_{local_num:04d}"
+        # Be robust if an old folder/index entry already occupies the name.
+        while os.path.exists(os.path.join(self.root, folder_name)):
+            local_num += 1
+            folder_name = f"{category}_{local_num:04d}"
         folder = os.path.join(self.root, folder_name); os.makedirs(folder, exist_ok=False)
-        csv_path = os.path.join(folder, "data.csv")
+        csv_path = os.path.join(folder, f"{folder_name}.csv")
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f); writer.writerow(FIELD_NAMES + ["state_name"])
             for r in records: writer.writerow([r.get(k) for k in FIELD_NAMES] + [r.get("state_name")])
         if config_h_path and os.path.exists(config_h_path): shutil.copyfile(config_h_path, os.path.join(folder, "config_snapshot.h"))
-        meta = {"flight_num": flight_num, "downloaded_at": datetime.now().strftime("%Y-%m-%d_%H%M%S_%f"), "num_records": len(records), "duration_s": records[-1].get("time_ms", 0) / 1000.0 if records else 0, "max_altitude_m": max((r.get("altitude_m") for r in records), default=None), "notes": notes, "category": category, "fingerprint": fingerprint}
+        downloaded = datetime.now(ZoneInfo("America/Los_Angeles"))
+        meta = {"flight_num": flight_num, "downloaded_at": downloaded.strftime("%Y-%m-%d %I:%M:%S %p %Z"), "num_records": len(records), "duration_s": records[-1].get("time_ms", 0) / 1000.0 if records else 0, "max_altitude_m": max((r.get("altitude_m") for r in records), default=None), "notes": notes, "category": category, "fingerprint": fingerprint}
         with open(os.path.join(folder, "meta.json"), "w", encoding="utf-8") as f: json.dump(meta, f, indent=2)
         index = self._read_index(); index.append({"folder": folder_name, "csv_path": csv_path, **meta}); self._write_index(index)
         return folder
@@ -59,7 +68,10 @@ class DataStore:
     def list_flights(self):
         entries = []
         for entry in self._read_index():
-            csv_path = os.path.join(self.root, entry.get("folder", ""), "data.csv")
+            folder = os.path.join(self.root, entry.get("folder", ""))
+            csv_path = os.path.join(folder, f"{entry.get('folder', '')}.csv")
+            if not os.path.isfile(csv_path):
+                csv_path = os.path.join(folder, "data.csv")
             if os.path.isfile(csv_path): entry["csv_path"] = csv_path; entries.append(entry)
         return sorted(entries, key=lambda e: e.get("downloaded_at", ""), reverse=True)
 
@@ -81,8 +93,13 @@ class DataStore:
     def remove_duplicates(self):
         index = self._read_index(); seen = set(); kept = []
         for entry in sorted(index, key=lambda e: e.get("downloaded_at", ""), reverse=True):
-            path = os.path.join(self.root, entry.get("folder", ""), "data.csv")
+            folder = os.path.join(self.root, entry.get("folder", ""))
+            path = os.path.join(folder, f"{entry.get('folder', '')}.csv")
+            if not os.path.isfile(path): path = os.path.join(folder, "data.csv")
             if not os.path.isfile(path): continue
+            if entry.get("category") == "ground_test":
+                kept.append(entry)
+                continue
             with open(path, "rb") as f: digest = hashlib.sha256(f.read()).hexdigest()
             if digest in seen:
                 folder = os.path.dirname(path)

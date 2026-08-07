@@ -1711,7 +1711,10 @@ class App(ctk.CTk):
         top.pack(fill="x", padx=10, pady=(8, 2))
 
         num = entry.get("flight_num", "?")
-        badge = f"FLIGHT {num:04d}" if isinstance(num, int) else f"FLIGHT {num}"
+        category = entry.get("category", "flight")
+        local_name = entry.get("folder", "")
+        local_num = local_name.rsplit("_", 1)[-1] if "_" in local_name else str(num)
+        badge = f"GROUND TEST {local_num}" if category == "ground_test" else (f"FLIGHT {local_num}")
         ctk.CTkLabel(top, text=badge, text_color=color,
                      fg_color=TEAL_DIM if color == TEAL else AMBER_DIM,
                      corner_radius=8, padx=8, pady=3,
@@ -1723,7 +1726,7 @@ class App(ctk.CTk):
         self._lbl(top, f"{dur:.1f}s  ·  {alt_str}", MUTED, 9).pack(side="right", padx=(0, 4))
 
         ts = entry.get("downloaded_at", "")
-        display_ts = ts[:19].replace("_", " ") if ts else "Unknown"
+        display_ts = ts if ts else "Unknown"
         self._lbl(row, display_ts, SUBTLE, 9).pack(anchor="w", padx=10, pady=(0, 6))
 
         # Per-row delete
