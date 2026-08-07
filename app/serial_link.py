@@ -38,7 +38,7 @@ class FlightComputerError(Exception):
 
 
 def find_board():
-    """Return the most likely serial port for the flight computer, or None."""
+    """Return a descriptor-matching port (only a hint, not proof)."""
     for port in serial.tools.list_ports.comports():
         if USB_MANUFACTURER in str(port.manufacturer):
             return port.device
@@ -50,6 +50,47 @@ def find_board():
     return None
 
 
+def probe_board(port, baud=115200, attempts=2):
+    """Open *port*, perform the Airbrakes INFO handshake, and return a link.
+
+    This deliberately probes the application protocol instead of trusting USB
+    descriptors: Windows can report stale/generic descriptors and the board
+    may enumerate as a plain USB serial device.
+    """
+    # Opening a USB CDC port can reset the RP2040/RP2350.  A single short
+    # attempt is therefore not enough, especially when several ports are
+    # being scanned.  Each attempt owns and closes its handle so a failed
+    # or busy port cannot prevent the remaining ports from being checked.
+    for attempt in range(attempts):
+        link = None
+        try:
+            link = FlightComputerLink(
+                port, baud=baud,
+                startup_delay=0.75 if attempt == 0 else 0.25,
+            )
+            link.verify()
+            return link
+        except Exception:
+            if link is not None:
+                link.close()
+            if attempt + 1 < attempts:
+                time.sleep(0.25)
+    return None
+
+
+def find_airbrakes_board():
+    """Probe every currently enumerated port and return ``(port, link)``."""
+    # Snapshot the enumeration before probing. Opening a USB serial port can
+    # briefly change its descriptor/listing; probing this snapshot guarantees
+    # every port that was available at scan start gets its own chance.
+    ports = [port.device for port in serial.tools.list_ports.comports()]
+    for device in ports:
+        link = probe_board(device)
+        if link is not None:
+            return device, link
+    return None, None
+
+
 def list_ports():
     """Return [(device, description), ...] for every serial port seen."""
     return [(p.device, p.description) for p in serial.tools.list_ports.comports()]
@@ -58,9 +99,21 @@ def list_ports():
 class FlightComputerLink:
     """One open serial connection to the board, with the flash.cpp protocol."""
 
-    def __init__(self, port, baud=115200, timeout=1):
+    def __init__(self, port, baud=115200, timeout=1, startup_delay=2.0):
+        self.port = port
         self.ser = serial.Serial(port, baud, timeout=timeout)
-        time.sleep(2)  # RP2350 USB-serial needs a moment after DTR toggles
+        time.sleep(startup_delay)  # USB serial may reset after DTR toggles
+
+    def verify(self):
+        """Prove that the open port is an Airbrakes flight computer.
+
+        USB descriptors are not a reliable connection test: a stale port,
+        bootloader, or unrelated serial device can still be opened. INFO is
+        the application-level handshake used by the GUI before reporting an
+        active connection.
+        """
+        self.get_info()
+        return True
 
     def close(self):
         try:

@@ -27,23 +27,15 @@ Key improvements over the original
 * Bug-fix: port combo is cleared before every refresh.
 """
 
-import csv as _csv
 import json
 import os
 import queue
-import shutil
 import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
-import matplotlib
-
-matplotlib.use("TkAgg")
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-import pandas as pd
 
 import coast_lookup
 import coast_table_tool
@@ -163,7 +155,11 @@ class App(ctk.CTk):
         self._selected_history_entry = None
         self._auto_connect_enabled = True
         self._auto_connect_job = None
+        self._connecting = False
         self._pages = {}                    # name -> CTkFrame
+        self._monitor_widgets = []
+        self._page_history = ["Board"]
+        self._page_history_index = 0
 
         # Build chrome (sidebar + content shell) then all pages
         self._build_chrome()
@@ -196,7 +192,17 @@ class App(ctk.CTk):
         self.content = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
         self.content.grid(row=0, column=1, sticky="nsew")
         self.content.grid_columnconfigure(0, weight=1)
-        self.content.grid_rowconfigure(0, weight=1)
+        self.content.grid_rowconfigure(1, weight=1)
+
+        nav = ctk.CTkFrame(self.content, fg_color=SURFACE, height=46, corner_radius=0)
+        nav.grid(row=0, column=0, sticky="ew")
+        self._back_btn = self._btn(nav, "‹  Back", self._page_back, "quiet", 90, 30)
+        self._back_btn.pack(side="left", padx=(12, 4), pady=8)
+        self._forward_btn = self._btn(nav, "Forward  ›", self._page_forward, "quiet", 100, 30)
+        self._forward_btn.pack(side="left", pady=8)
+        self._global_activity = ctk.CTkLabel(nav, text="Ready", text_color=MUTED,
+            font=ctk.CTkFont(family=SANS, size=11, weight="bold"))
+        self._global_activity.pack(side="right", padx=18)
 
         # Toast overlay — built once, shown/hidden via place()
         self._toast_frame = ctk.CTkFrame(
@@ -284,6 +290,13 @@ class App(ctk.CTk):
 
     # ---------------------------------------------------------------- nav
     def _show_page(self, name: str):
+        if name != getattr(self, "_current_page", None) and not getattr(self, "_navigating_history", False):
+            history = self._page_history[:self._page_history_index + 1]
+            if not history or history[-1] != name:
+                history.append(name)
+            self._page_history = history
+            self._page_history_index = len(history) - 1
+        self._current_page = name
         for pname, pbtn in self._nav_btns.items():
             active = pname == name
             pbtn.configure(
@@ -291,9 +304,29 @@ class App(ctk.CTk):
                 text_color=TEXT if active else MUTED)
         for pname, pframe in self._pages.items():
             if pname == name:
-                pframe.grid(row=0, column=0, sticky="nsew")
+                pframe.grid(row=1, column=0, sticky="nsew")
             else:
                 pframe.grid_remove()
+        self._back_btn.configure(state="normal" if self._page_history_index else "disabled")
+        self._forward_btn.configure(state="normal" if self._page_history_index < len(self._page_history)-1 else "disabled")
+
+    def _page_back(self):
+        if self._page_history_index:
+            self._page_history_index -= 1
+            self._navigating_history = True
+            try:
+                self._show_page(self._page_history[self._page_history_index])
+            finally:
+                self._navigating_history = False
+
+    def _page_forward(self):
+        if self._page_history_index < len(self._page_history) - 1:
+            self._page_history_index += 1
+            self._navigating_history = True
+            try:
+                self._show_page(self._page_history[self._page_history_index])
+            finally:
+                self._navigating_history = False
 
     # ================================================================= Toast
     def toast(self, msg: str, kind: str = "ok", duration: int = 4000):
@@ -342,15 +375,20 @@ class App(ctk.CTk):
         self._auto_connect_job = None
         if not self._auto_connect_enabled:
             return
-        if not self.link and not self._op_running:
+        if not self.link and not self._op_running and not self._connecting:
             def scan():
-                return serial_link.find_board()
+                # Descriptors are only hints. Probe every port with INFO so
+                # CONNECTED means an actual Airbrakes application responded.
+                return serial_link.find_airbrakes_board()
 
-            def on_scan(port, err):
-                if port and not self.link:
+            def on_scan(result, err):
+                port, link = result or (None, None)
+                if err:
+                    self._log_activity(f"Auto-scan error: {err}")
+                if port and link and not self.link:
                     self._log_activity(f"Board detected on {port} — auto-connecting…")
                     self._conn_hint.configure(text=f"Found on {port} — connecting…")
-                    self._do_connect(port, auto=True)
+                    self._accept_connection(port, link, auto=True)
 
             _run_bg(self, scan, on_scan)
         self._auto_connect_job = self.after(2000, self._auto_connect_tick)
@@ -433,6 +471,9 @@ class App(ctk.CTk):
 
     def _set_activity(self, text: str, running=False):
         self._op_running = running
+        if hasattr(self, "_global_activity"):
+            self._global_activity.configure(text=("⏳ " if running else "✓ ") + text,
+                                            text_color=AMBER if running else TEAL)
         if not hasattr(self, "_activity_title"):
             return
         self._activity_title.configure(text=text)
@@ -496,18 +537,19 @@ class App(ctk.CTk):
             ctrl, "Autoscroll  ON", self._toggle_autoscroll, "quiet", 118, 27)
         self._autoscroll_btn.pack(side="right", padx=(0, 8))
 
-        self._monitor_box = ctk.CTkTextbox(
+        monitor_box = ctk.CTkTextbox(
             card, height=170, corner_radius=12,
             fg_color=CONSOLE, border_color=BORDER, border_width=1,
             text_color="#c5ede0",
             font=ctk.CTkFont(family=MONO, size=10), wrap="none")
-        self._monitor_box.pack(fill="x", padx=18, pady=(0, 14))
+        monitor_box.pack(fill="x", padx=18, pady=(0, 14))
 
-        tb = self._monitor_box._textbox
+        tb = monitor_box._textbox
         tb.tag_config("normal", foreground="#c5ede0")
         tb.tag_config("warn",   foreground=AMBER)
         tb.tag_config("error",  foreground=RED)
         tb.tag_config("state",  foreground=BLUE)
+        self._monitor_widgets.append((monitor_box, self._monitor_status_lbl, self._monitor_lines_lbl))
         return card
 
     def _toggle_autoscroll(self):
@@ -517,22 +559,24 @@ class App(ctk.CTk):
         self.toast(f"Autoscroll {'enabled' if self._autoscroll else 'disabled'}", "info", 2000)
 
     def _clear_monitor(self):
-        self._monitor_box.configure(state="normal")
-        self._monitor_box.delete("1.0", "end")
-        self._monitor_box.configure(state="disabled")
-        self._monitor_lines_lbl.configure(text="0 lines")
+        for box, _status, lines_lbl in self._monitor_widgets:
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            box.configure(state="disabled")
+            lines_lbl.configure(text="0 lines")
         self.toast("Monitor cleared", "info", 1500)
 
     def _append_monitor(self, text: str, tag="normal"):
         try:
-            if not hasattr(self, "_monitor_box") or not self._monitor_box.winfo_exists():
-                return
-            tb = self._monitor_box._textbox
-            tb.configure(state="normal")
-            tb.insert("end", str(text) + "\n", tag)
-            if self._autoscroll:
-                tb.see("end")
-            tb.configure(state="disabled")
+            for box, _status, _lines_lbl in self._monitor_widgets:
+                if not box.winfo_exists():
+                    continue
+                tb = box._textbox
+                tb.configure(state="normal")
+                tb.insert("end", str(text) + "\n", tag)
+                if self._autoscroll:
+                    tb.see("end")
+                tb.configure(state="disabled")
         except tk.TclError:
             pass
 
@@ -553,24 +597,36 @@ class App(ctk.CTk):
                            else "normal")
                     self._append_monitor(line, tag)
                 if lines:
-                    tb = self._monitor_box._textbox
-                    count = int(tb.index("end-1c").split(".")[0]) - 1
-                    if count > 600:
-                        tb.configure(state="normal")
-                        tb.delete("1.0", "100.0")
-                        tb.configure(state="disabled")
-                        count = max(0, count - 100)
-                    self._monitor_lines_lbl.configure(text=f"{count:,} lines")
-                    self._monitor_status_lbl.configure(
-                        text=f"●  Live · {len(lines)} new line(s)", text_color=TEAL)
+                    for box, status_lbl, lines_lbl in self._monitor_widgets:
+                        tb = box._textbox
+                        count = int(tb.index("end-1c").split(".")[0]) - 1
+                        if count > 600:
+                            tb.configure(state="normal")
+                            tb.delete("1.0", "100.0")
+                            tb.configure(state="disabled")
+                            count = max(0, count - 100)
+                        lines_lbl.configure(text=f"{count:,} lines")
+                        status_lbl.configure(
+                            text=f"●  Live · {len(lines)} new line(s)", text_color=TEAL)
             except Exception as err:
-                self._monitor_status_lbl.configure(
-                    text=f"●  Monitor paused: {err}", text_color=RED)
+                self._log_activity(f"Serial monitor disconnected: {err}")
+                try:
+                    self.link.close()
+                except Exception:
+                    pass
+                self.link = None
+                self._conn_dot.configure(text="●  OFFLINE", text_color=RED)
+                self._conn_hint.configure(text="Board disconnected — retrying scan")
+                for _box, status_lbl, _lines_lbl in self._monitor_widgets:
+                    status_lbl.configure(text="●  Disconnected", text_color=RED)
         if self.link:
             self._monitor_job = self.after(250, self._poll_monitor)
 
     # ================================================================= Connection helpers
     def _do_connect(self, port: str, auto=False):
+        if self._connecting or self.link:
+            return
+        self._connecting = True
         self._set_activity(f"Connecting to {port}…", True)
         self._log_activity(f"Opening {port}…")
         if hasattr(self, "_board_prog") and self._board_prog.winfo_exists():
@@ -582,7 +638,13 @@ class App(ctk.CTk):
                 text=f"Connecting to {port}… board may need a moment", text_color=AMBER)
 
         def task():
-            return serial_link.FlightComputerLink(port)
+            link = serial_link.FlightComputerLink(port)
+            try:
+                link.verify()
+                return link
+            except Exception:
+                link.close()
+                raise
 
         def done(result, err):
             try:
@@ -592,6 +654,7 @@ class App(ctk.CTk):
             except tk.TclError:
                 pass
             if err:
+                self._connecting = False
                 self.link = None
                 self._conn_dot.configure(text="●  OFFLINE", text_color=RED)
                 self._conn_hint.configure(text="Connection failed.")
@@ -606,30 +669,35 @@ class App(ctk.CTk):
                 if not auto:
                     self.toast(f"Connection failed: {err}", "error", 0)
                 return
-            self.link = result
-            self._last_port = port
-            self._conn_dot.configure(text="●  CONNECTED", text_color=TEAL)
-            self._conn_hint.configure(text=f"Connected on {port}")
-            if hasattr(self, "_board_event_lbl"):
-                try:
-                    self._board_event_lbl.configure(
-                        text=f"Connected to {port} — board link active", text_color=TEAL)
-                except tk.TclError:
-                    pass
-            if hasattr(self, "_monitor_status_lbl"):
-                try:
-                    self._monitor_status_lbl.configure(
-                        text="●  Connected · waiting for output", text_color=AMBER)
-                except tk.TclError:
-                    pass
-            self._set_activity("Connected", False)
-            self._log_activity(f"Connected to {port}")
-            self.toast(f"Board connected on {port}", "ok")
-            self._start_monitor_poll()
-            if hasattr(self, "_port_var"):
-                self._port_var.set(port)
+            self._accept_connection(port, result, auto=auto)
 
         _run_bg(self, task, done)
+
+    def _accept_connection(self, port, link, auto=False):
+        """Publish a link only after its INFO handshake has succeeded."""
+        self.link = link
+        self._connecting = False
+        self._last_port = port
+        self._conn_dot.configure(text="●  CONNECTED", text_color=TEAL)
+        self._conn_hint.configure(text=f"Connected on {port}")
+        if hasattr(self, "_board_event_lbl"):
+            try:
+                self._board_event_lbl.configure(
+                    text=f"Connected to {port} — board link active", text_color=TEAL)
+            except tk.TclError:
+                pass
+        if hasattr(self, "_monitor_status_lbl"):
+            try:
+                self._monitor_status_lbl.configure(
+                    text="●  Connected · waiting for output", text_color=AMBER)
+            except tk.TclError:
+                pass
+        self._set_activity("Connected", False)
+        self._log_activity(f"Connected to {port}")
+        self.toast(f"Board connected on {port}", "ok")
+        self._start_monitor_poll()
+        if hasattr(self, "_port_var"):
+            self._port_var.set(port)
 
     def _disconnect(self):
         if self.link:
@@ -670,7 +738,13 @@ class App(ctk.CTk):
 
         def task():
             time.sleep(1.0)
-            return serial_link.FlightComputerLink(port)
+            link = serial_link.FlightComputerLink(port)
+            try:
+                link.verify()
+                return link
+            except Exception:
+                link.close()
+                raise
 
         def done(result, err):
             if err:
@@ -805,10 +879,6 @@ class App(ctk.CTk):
         vals = [f"{dev}  ·  {desc}" for dev, desc in ports]
         if hasattr(self, "_port_combo"):
             self._port_combo.configure(values=vals)
-        auto = serial_link.find_board()
-        if auto and hasattr(self, "_port_var"):
-            matched = next((v for v in vals if v.startswith(auto)), auto)
-            self._port_var.set(matched)
         n = len(vals)
         if hasattr(self, "_board_event_lbl"):
             try:
@@ -851,6 +921,7 @@ class App(ctk.CTk):
                 self._set_activity("Verification failed", False)
                 self._board_event_lbl.configure(text=f"INFO failed: {err}", text_color=RED)
                 self.toast(f"Verification failed: {err}", "error", 0)
+                self._disconnect()
             else:
                 self._set_activity("Board verified", False)
                 self._board_event_lbl.configure(
@@ -1474,30 +1545,16 @@ class App(ctk.CTk):
         self._hist_title = self._lbl(rh, "Select a flight to inspect it", TEXT, 20, "bold")
         self._hist_title.grid(row=0, column=0, sticky="w")
 
-        # Tab bar
-        tab_bar = ctk.CTkFrame(rh, fg_color=SURFACE2, corner_radius=10)
-        tab_bar.grid(row=0, column=1, sticky="e")
-        self._hist_tab_btns = {}
-        for tname in ("Stats", "Plots", "Data table"):
-            tb = ctk.CTkButton(
-                tab_bar, text=tname, width=100, height=30, corner_radius=8,
-                fg_color=TEAL_DIM if tname == "Plots" else "transparent",
-                hover_color=FIELD,
-                text_color=TEXT if tname == "Plots" else MUTED,
-                font=ctk.CTkFont(family=SANS, size=11, weight="bold"),
-                command=lambda n=tname: self._switch_hist_tab(n))
-            tb.pack(side="left", padx=3, pady=3)
-            self._hist_tab_btns[tname] = tb
-
         self._hist_content = ctk.CTkFrame(right, fg_color=BG, corner_radius=0)
         self._hist_content.grid(row=1, column=0, sticky="nsew")
         self._hist_content.grid_columnconfigure(0, weight=1)
         self._hist_content.grid_rowconfigure(0, weight=1)
 
-        self._build_hist_stats_panel()
-        self._build_hist_plots_panel()
-        self._build_hist_table_panel()
-        self._switch_hist_tab("Plots")
+        self._history_hint = self._lbl(
+            self._hist_content,
+            "Select a saved flight to open its CSV in Excel or show it in File Explorer.",
+            MUTED, 13, wraplength=700)
+        self._history_hint.grid(row=0, column=0, padx=30, pady=60)
         self._refresh_history_list()
 
     # ---- History sub-panels ----
@@ -1545,6 +1602,7 @@ class App(ctk.CTk):
                   MUTED, 13).grid(row=0, column=0)
         self._plot_canvas_widget  = None
         self._plot_toolbar_widget = None
+        self._plot_figure = None
 
     def _build_hist_table_panel(self):
         self._hist_table_panel = ctk.CTkFrame(
@@ -1587,6 +1645,9 @@ class App(ctk.CTk):
                 scrollregion=self._table_canvas.bbox("all")))
 
     def _switch_hist_tab(self, name: str):
+        if self._selected_history_entry is not None:
+            self._show_local_file_hint(self._selected_history_entry)
+            return
         panels = {
             "Stats":      self._hist_stats_panel,
             "Plots":      self._hist_plots_panel,
@@ -1671,7 +1732,9 @@ class App(ctk.CTk):
         del_btn.place(relx=1.0, x=-8, rely=0.0, y=6, anchor="ne")
 
         # Click anywhere on the row to select it
-        for widget in [row, top, del_btn]:
+        # Do not bind the delete button to row selection: that used to replace
+        # the button's command and made local deletion appear broken.
+        for widget in [row, top]:
             try:
                 widget.bind("<Button-1>", lambda ev, e=entry: self._select_history_entry(e))
             except Exception:
@@ -1690,9 +1753,41 @@ class App(ctk.CTk):
         cat = entry.get("category", "flight").replace("_", " ").title()
         self._hist_title.configure(text=f"{cat}  {num}")
         self.toast(f"Viewing {cat} {num}", "info", 1500)
-        self._render_stats(entry)
-        self._render_active_plot()
-        self._render_table(entry)
+        # Do not build Matplotlib figures or thousands of Tk labels here.
+        # The CSV is already saved locally; opening it in Excel/default app is
+        # faster, safer, and avoids TkAgg creating stray windows.
+        self._show_local_file_hint(entry)
+
+    def _show_local_file_hint(self, entry):
+        for widget in self._hist_content.winfo_children():
+            widget.destroy()
+        card = self._card(self._hist_content)
+        card.grid(row=0, column=0, sticky="nsew", padx=24, pady=24)
+        self._lbl(card, "Flight data is ready", TEXT, 18, "bold").pack(pady=(40, 8))
+        self._lbl(card, "Open the locally saved CSV in Excel or your default spreadsheet app.",
+                  MUTED, 11, wraplength=650).pack(pady=6)
+        self._lbl(card, entry.get("csv_path", "CSV path unavailable"), SUBTLE, 10,
+                  wraplength=800).pack(pady=6)
+        self._btn(card, "Open CSV in Excel", self._open_selected_csv,
+                  "primary", 190).pack(pady=(18, 8))
+        self._btn(card, "Show in folder", self._show_selected_folder,
+                  "secondary", 150).pack(pady=(0, 40))
+
+    def _open_selected_csv(self):
+        if not self._selected_history_entry:
+            return
+        path = self._selected_history_entry.get("csv_path", "")
+        if os.path.isfile(path):
+            os.startfile(path) if os.name == "nt" else __import__("webbrowser").open(path)
+        else:
+            self.toast("CSV file not found", "error", 0)
+
+    def _show_selected_folder(self):
+        if not self._selected_history_entry:
+            return
+        path = os.path.dirname(self._selected_history_entry.get("csv_path", ""))
+        if os.path.isdir(path):
+            os.startfile(path) if os.name == "nt" else __import__("webbrowser").open(path)
 
     def _delete_local(self, entry: dict):
         folder = entry.get("folder", "")
@@ -1732,12 +1827,6 @@ class App(ctk.CTk):
             ("Category",      entry.get("category", "flight").replace("_", " ").title()),
             ("Folder",        entry.get("folder", "?")),
         ]
-        try:
-            df = pd.read_csv(entry["csv_path"])
-            stats.insert(5, ("Max velocity", f"{df['velocity_ms'].max():.1f} m/s"))
-        except Exception:
-            pass
-
         for label, val in stats:
             r = ctk.CTkFrame(self._hist_stats_card, fg_color=FIELD, corner_radius=10)
             r.pack(fill="x", padx=16, pady=3)
@@ -1764,21 +1853,48 @@ class App(ctk.CTk):
         if self._selected_history_entry is None:
             return
         entry = self._selected_history_entry
-        try:
-            df = pd.read_csv(entry["csv_path"])
-        except Exception as err:
-            self.toast(f"Could not load CSV: {err}", "error", 0); return
-
         name = self._plot_choice.get()
         plot_fn = dict(plotting.ALL_PLOTS).get(name)
         if plot_fn is None:
             return
 
-        if plot_fn is plotting.plot_coast_predicted_vs_actual:
-            cached = self._get_coast_table()
-            fig = (plot_fn(df, *cached) if cached else plot_fn(df))
-        else:
-            fig = plot_fn(df)
+        # CSV parsing and Figure construction are deliberately off the Tk
+        # thread. Large flights can otherwise make Windows report that the
+        # application is not responding while the plot is being built.
+        csv_path = entry["csv_path"]
+        request_entry = entry
+        def task():
+            df = pd.read_csv(csv_path)
+            if plot_fn is plotting.plot_coast_predicted_vs_actual:
+                cached = self._get_coast_table()
+                fig = (plot_fn(df, *cached) if cached else plot_fn(df))
+            else:
+                fig = plot_fn(df)
+            return fig
+
+        self._plot_request_id = getattr(self, "_plot_request_id", 0) + 1
+        request_id = self._plot_request_id
+        self._log_activity(f"Rendering {name}…")
+
+        def done(fig, err):
+            if request_id != getattr(self, "_plot_request_id", -1):
+                if fig is not None:
+                    fig.clear()
+                return
+            if err:
+                self.toast(f"Plot failed: {err}", "error", 0)
+                self._log_activity(f"Plot error ({name}): {err}")
+                return
+            if self._selected_history_entry is not request_entry:
+                fig.clear()
+                return
+            self._embed_plot(fig)
+            self._log_activity(f"{name} ready")
+
+        _run_bg(self, task, done)
+
+    def _embed_plot(self, fig):
+        """Install an already-built Figure without doing heavy work in Tk."""
 
         # Theme the figure to match the dark UI
         plot_bg = "#0e1820"
@@ -1793,9 +1909,10 @@ class App(ctk.CTk):
             for spine in ax.spines.values():
                 spine.set_color(BORDER)
             ax.grid(True, color=BORDER, alpha=0.5)
-        fig.tight_layout(pad=2.0)
+            fig.tight_layout(pad=2.0)
 
         # Clear previous canvas + toolbar
+        old_figure = self._plot_figure
         if self._plot_canvas_widget:
             try:
                 self._plot_canvas_widget.get_tk_widget().destroy()
@@ -1828,7 +1945,11 @@ class App(ctk.CTk):
 
         self._plot_canvas_widget  = canvas
         self._plot_toolbar_widget = toolbar
-        plt.close(fig)
+        self._plot_figure = fig
+        # Close only the previous figure, after its Tk canvas is destroyed.
+        # The current figure must remain alive while FigureCanvasTkAgg uses it.
+        if old_figure is not None and old_figure is not fig:
+            old_figure.clear()
 
     # ---- Data table ----
     def _render_table(self, entry: dict):

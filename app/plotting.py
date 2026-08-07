@@ -7,8 +7,7 @@ FigureCanvasTkAgg. Nothing here talks to Tkinter directly.
 """
 
 import matplotlib
-matplotlib.use("Agg")  # overridden by the GUI (TkAgg) when embedded live
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 
 # Matches the app's ttkbootstrap "superhero" theme so embedded plots don't
 # look like a jarring white rectangle inside a dark UI.
@@ -18,7 +17,7 @@ GRID = "#44566b"
 ACCENT = "#4f9bde"
 ACCENT2 = "#e07b39"
 
-plt.rcParams.update({
+matplotlib.rcParams.update({
     "figure.facecolor": BG,
     "axes.facecolor": BG,
     "axes.edgecolor": GRID,
@@ -34,7 +33,11 @@ plt.rcParams.update({
 
 
 def _fig(title, xlabel, ylabel):
-    fig, ax = plt.subplots(figsize=(7, 4))
+    # Build a Figure directly instead of pyplot.subplots().  pyplot creates
+    # GUI managers under TkAgg, which can open a second window and makes plot
+    # generation compete with Tk's event loop.
+    fig = Figure(figsize=(7, 4), dpi=90)
+    ax = fig.add_subplot(111)
     fig.patch.set_facecolor(BG)
     ax.set_facecolor(BG)
     ax.set_title(title, color=FG)

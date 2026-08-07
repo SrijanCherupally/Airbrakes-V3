@@ -1,4 +1,4 @@
-﻿"""Persistent local storage for downloaded flights and ground tests."""
+﻿I"""Persistent local storage for downloaded flights and ground tests."""
 import csv, hashlib, json, os, shutil
 from datetime import datetime
 from serial_link import FIELD_NAMES
@@ -34,7 +34,17 @@ class DataStore:
                 folder = os.path.join(self.root, entry.get("folder", ""))
                 if os.path.isdir(folder): return folder
         category = category or ("ground_test" if any(r.get("state_name", "").startswith("GROUND_TEST") for r in records) else "flight")
-        folder_name = f"{category}_{flight_num:04d}_{datetime.now().strftime('%Y-%m-%d_%H%M%S_%f')}"
+        # The board number is a device slot (often 0000/0001), not a unique
+        # local flight ID.  Use a monotonic local sequence for readable names.
+        used = []
+        for item in self._read_index():
+            if item.get("category", "flight") == category:
+                try:
+                    used.append(int(str(item.get("folder", "")).split("_")[1]))
+                except (IndexError, ValueError):
+                    pass
+        local_num = max(used, default=0) + 1
+        folder_name = f"{category}_{local_num:04d}_{datetime.now().strftime('%Y-%m-%d_%H%M%S_%f')}"
         folder = os.path.join(self.root, folder_name); os.makedirs(folder, exist_ok=False)
         csv_path = os.path.join(folder, "data.csv")
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
