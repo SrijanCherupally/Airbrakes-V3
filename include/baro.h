@@ -40,12 +40,13 @@ class BARO {
   bool update();
   bool isConnected();
   bool hasValidSample() const;
+  void zeroAltitude();
   void printDiagnostics() const;
 
   float getTemperatureC() const { return tempC; }
   float getPressurePa() const { return pressurePa; }
-  float getAltitudeCm() const { return altitude_cm; }
-  float getAltitudeM() const { return altitude_cm / 100.0f; }
+  float getAltitudeCm() const { return altitude_cm - altitude_offset_cm; }
+  float getAltitudeM() const { return getAltitudeCm() / 100.0f; }
   float getBaselinePressure() const { return baselinePressure; }
 
  private:
@@ -63,6 +64,7 @@ class BARO {
 
   int32_t rawT = 0, rawP = 0;
   float tempC = 0.0f, pressurePa = 0.0f, altitude_cm = 0.0f;
+  float altitude_offset_cm = 0.0f;
   uint8_t i2cAddress = DPS368_I2C_ADDR_HIGH;
   bool initialized = false;
   uint32_t updateCount = 0;

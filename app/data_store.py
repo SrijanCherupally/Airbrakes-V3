@@ -10,6 +10,7 @@ class DataStore:
         os.makedirs(self.root, exist_ok=True)
         self.index_path = os.path.join(self.root, "index.json")
         if not os.path.exists(self.index_path): self._write_index([])
+        self._migrate_legacy_names()
         # Clean up copies created by older versions before the history view
         # reads them. The newest copy of each identical CSV is retained.
         self.remove_duplicates()
@@ -22,6 +23,40 @@ class DataStore:
 
     def _write_index(self, data):
         with open(self.index_path, "w", encoding="utf-8") as f: json.dump(data, f, indent=2)
+
+    def _migrate_legacy_names(self):
+        """Rename old timestamp-suffixed folders to stable numbered names."""
+        index = self._read_index()
+        changed = False
+        next_num = {}
+        for entry in index:
+            old_name = entry.get("folder", "")
+            category = entry.get("category", "flight")
+            if not old_name or category not in ("flight", "ground_test"):
+                continue
+            # Only migrate names such as ground_test_0001_2026-08-07_...
+            prefix = f"{category}_"
+            if not old_name.startswith(prefix) or len(old_name.split("_")) < 3:
+                continue
+            try:
+                old_num = int(old_name[len(prefix):].split("_", 1)[0])
+            except ValueError:
+                continue
+            candidate = f"{category}_{old_num:04d}"
+            old_path = os.path.join(self.root, old_name)
+            new_path = os.path.join(self.root, candidate)
+            if os.path.isdir(old_path) and old_name != candidate and not os.path.exists(new_path):
+                os.rename(old_path, new_path)
+                entry["folder"] = candidate
+                entry["csv_path"] = os.path.join(new_path, f"{candidate}.csv")
+                legacy_csv = os.path.join(new_path, "data.csv")
+                clean_csv = entry["csv_path"]
+                if os.path.isfile(legacy_csv) and not os.path.exists(clean_csv):
+                    os.rename(legacy_csv, clean_csv)
+                changed = True
+            next_num[category] = max(next_num.get(category, 0), old_num)
+        if changed:
+            self._write_index(index)
 
     @staticmethod
     def _records_fingerprint(records):

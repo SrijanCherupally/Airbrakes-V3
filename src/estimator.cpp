@@ -41,6 +41,9 @@ void filterReset() {
   imu.update();
   baro.update();
   initOrientation();
+  // Zero both raw barometric altitude and the Kalman measurement at the
+  // instant a ground test or flight begins.
+  baro.zeroAltitude();
   filter.reset();
   filter.setBias(gCalibratedBias);
   gCd = BASE_CD;
@@ -118,16 +121,6 @@ void filterUpdate() {
   static uint32_t lastLogMs = 0;
   uint32_t nowMs = millis();
   bool logDue = (lastLogMs == 0) || (uint32_t)(nowMs - lastLogMs) >= 10;
-  if (logDue && (currentState == STATE_GROUND_TEST_RECORDING ||
-      currentState == STATE_BOOST || currentState == STATE_CONTROL ||
-      currentState == STATE_DESCENT)) {
-    lastLogMs = nowMs;
-    logFlightData(estAltitude(), estVelocity(), estBias(), estRawAccel(),
-                  estVerticalAccel(), estRawBaro(), motorpos, motorvel,
-                  motor_cmd_pos, estCd(), desiredCd, motorcurrent,
-                  batteryVoltage, axisError);
-  }
-
   // Kalman prediction from world-frame vertical acceleration
   filter.predict();
 
@@ -146,11 +139,26 @@ void filterUpdate() {
   // Update Cd estimate only while decelerating under drag (coast phase).
   float accel = filter.getCorrectedAcceleration();
   float vel = filter.getVelocity();
-  if (accel < -G && fabsf(vel) > 1.0f) {
+  // CD is identifiable only during powered-flight coast/control.  Ground
+  // tests never enter these states, but keep the state gate explicit so a
+  // future diagnostic mode cannot turn bench motion into a flight CD.
+  bool flightCoast = (currentState == STATE_BOOST ||
+                      currentState == STATE_CONTROL);
+  if (flightCoast && accel < -G && vel > 1.0f) {
     float currCd = -(2.0f * MASS * (accel + G)) / (rhoA * vel * fabsf(vel));
     if (isfinite(currCd) && currCd >= 0.0f && currCd < 10.0f) {
       gCd = (1.0f - alpha_cd) * gCd + alpha_cd * currCd;
     }
+  }
+
+  if (logDue && (currentState == STATE_GROUND_TEST_RECORDING ||
+      currentState == STATE_BOOST || currentState == STATE_CONTROL ||
+      currentState == STATE_DESCENT)) {
+    lastLogMs = nowMs;
+    logFlightData(estAltitude(), estVelocity(), estBias(), estRawAccel(),
+                  estVerticalAccel(), estRawBaro(), motorpos, motorvel,
+                  motor_cmd_pos, estCd(), desiredCd, motorcurrent,
+                  batteryVoltage, axisError);
   }
 
   holdLoopRate(start);

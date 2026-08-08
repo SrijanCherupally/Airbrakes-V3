@@ -7,6 +7,10 @@ bool BARO::begin() {
   return initialized;
 }
 
+void BARO::zeroAltitude() {
+  if (hasValidSample()) altitude_offset_cm = altitude_cm;
+}
+
 bool BARO::update() {
   ++updateCount;
   if (!initialized) return false;

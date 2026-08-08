@@ -22,23 +22,23 @@ void Kalman::reset() {
   worldAcc[2] = 0.0f;
 
   // Initial uncertainty
-  P[0][0] = 10.0f;  // altitude uncertainty
+  P[0][0] = 0.05f;  // altitude uncertainty after zeroing the baro
   P[0][1] = 0.0f;
   P[0][2] = 0.0f;
   P[1][0] = 0.0f;
-  P[1][1] = 10.0f;  // velocity uncertainty
+  P[1][1] = 1.0f;  // velocity uncertainty
   P[1][2] = 0.0f;
   P[2][0] = 0.0f;
   P[2][1] = 0.0f;
-  P[2][2] = 0.1f;  // bias uncertainty
+  P[2][2] = 0.25f;  // bias uncertainty
 
   // Process noise
-  Q_altitude = 0.01f;
-  Q_velocity = 0.1f;
-  Q_bias = 0.0001f;
+  Q_altitude = 0.8f * 0.8f;  // acceleration noise density
+  Q_velocity = 0.00001f;     // bias random walk density
+  Q_bias = 0.00001f;
 
   // DPS368 noise
-  R_altitude = 2.0f;
+  R_altitude = 0.08f * 0.08f;
 }
 
 void Kalman::setBias(float value) {
@@ -57,15 +57,31 @@ void Kalman::predict() {
 
   correctedAcceleration = worldAcc[2] - bias;
 
-  float oldVelocity = velocity;
-
+  const float dt2 = dt * dt;
+  const float halfDt2 = 0.5f * dt2;
+  altitude += velocity * dt + halfDt2 * correctedAcceleration;
   velocity += correctedAcceleration * dt;
 
-  altitude += oldVelocity * dt + 0.5f * correctedAcceleration * dt * dt;
-
-  P[0][0] += Q_altitude;
-  P[1][1] += Q_velocity;
-  P[2][2] += Q_bias;
+  // Full constant-acceleration covariance propagation.  The previous code
+  // discarded the altitude/velocity and altitude/bias cross-covariances, so
+  // barometer measurements could not correct vertical velocity.
+  float F[3][3] = {{1.0f, dt, -halfDt2}, {0.0f, 1.0f, -dt}, {0.0f, 0.0f, 1.0f}};
+  float FP[3][3] = {};
+  float nextP[3][3] = {};
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j)
+      for (int k = 0; k < 3; ++k) FP[i][j] += F[i][k] * P[k][j];
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j)
+      for (int k = 0; k < 3; ++k) nextP[i][j] += FP[i][k] * F[j][k];
+  const float q = Q_altitude;
+  nextP[0][0] += q * dt2 * dt2 * 0.25f;
+  nextP[0][1] += q * dt2 * dt * 0.5f;
+  nextP[1][0] += q * dt2 * dt * 0.5f;
+  nextP[1][1] += q * dt2;
+  nextP[2][2] += Q_velocity * dt;
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) P[i][j] = nextP[i][j];
 }
 
 void Kalman::update() {
@@ -82,13 +98,20 @@ void Kalman::update() {
     return;
   }
 
-  float K = P[0][0] / (P[0][0] + R_altitude);
+  const float S = P[0][0] + R_altitude;
+  if (!isfinite(S) || S <= 0.0f) return;
+  float K[3] = {P[0][0] / S, P[1][0] / S, P[2][0] / S};
+  altitude += K[0] * error;
+  velocity += K[1] * error;
+  bias += K[2] * error;
 
-  altitude += K * error;
-
-  P[0][0] *= (1.0f - K);
-
-  bias += 0.001f * error;
+  float oldP[3][3];
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) oldP[i][j] = P[i][j];
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j)
+      P[i][j] = oldP[i][j] - K[i] * oldP[0][j] - oldP[i][0] * K[j] +
+                K[i] * S * K[j];
 }
 
 void Kalman::injectVelocity(float dv) {
