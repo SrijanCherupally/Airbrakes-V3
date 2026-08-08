@@ -11,8 +11,8 @@
 
 // ---------- RGB LED PINS ----------
 #define LED_R 24
-#define LED_G 23
-#define LED_B 22
+#define LED_G 22
+#define LED_B 23
 
 // ---------- CAN (MCP2515 on SPI0) PINS ----------
 #define CAN_MISO 16

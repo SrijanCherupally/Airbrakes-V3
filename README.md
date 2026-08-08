@@ -192,7 +192,7 @@ The firmware assumes this configuration and does not send
 | MCP2515 MISO / CS / SCK / MOSI / INT | 16 / 17 / 18 / 19 / 20 |
 | DPS368 SCL / SDA | 5 / 4 |
 | ICM42688 CS / SCK / MISO / MOSI | 9 / 10 / 8 / 11 |
-| RGB LED R / G / B | 24 / 23 / 22 |
+| RGB LED R / G / B | 24 / 22 / 23 |
 
 ### Vendored CAN library
 
