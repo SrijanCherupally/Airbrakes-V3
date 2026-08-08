@@ -1,0 +1,21 @@
+{
+  "name": "airbrakes-v3-ground-station",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Airbrakes V3 desktop ground station",
+  "main": "desktop/main.js",
+  "scripts": {
+    "start": "electron .",
+    "install-app": "npm install && npm start"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0"
+  },
+  "dependencies": {
+    "serialport": "^13.0.0"
+  },
+  "allowScripts": {
+    "electron@35.7.5": true,
+    "@serialport/bindings-cpp@13.0.0": true
+  }
+}

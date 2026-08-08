@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 from pathlib import Path
 
 import numpy as np
@@ -10,10 +11,10 @@ import numpy as np
 # -----------------------------------------------------------------------------
 # User-editable configuration
 # -----------------------------------------------------------------------------
-MASS_KG = 0.608
-TEMP_F = 68.0
-HUMIDITY_PCT = 55.0
-PRESSURE_HPA = 1015.0
+MASS_KG = float(os.getenv("AIRBRAKES_MASS_KG", "0.608"))
+TEMP_F = float(os.getenv("AIRBRAKES_TEMP_F", "68.0"))
+HUMIDITY_PCT = float(os.getenv("AIRBRAKES_HUMIDITY_PCT", "55.0"))
+PRESSURE_HPA = float(os.getenv("AIRBRAKES_PRESSURE_HPA", "1015.0"))
 
 N_VEL = 20
 N_CD = 20

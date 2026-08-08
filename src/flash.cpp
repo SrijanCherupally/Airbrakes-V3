@@ -6,7 +6,7 @@
 #include "state.h"
 
 // Binary data structure (76 bytes per record).
-// Keep this layout synchronized with app/serial_link.py (<I16fII).
+// Keep this layout synchronized with desktop/main.js (<I16fII).
 struct __attribute__((packed)) FlightRecord {
   uint32_t time_ms;
   float altitude_m;

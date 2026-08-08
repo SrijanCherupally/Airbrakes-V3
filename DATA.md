@@ -18,7 +18,7 @@ file named `/flight_<N>.bin`; flight numbers are not reused. A file contains
 | `state`, `axis_error` | 2 × `uint32_t` |
 
 The Python struct format is `<I16fII`. The fields are defined in
-`src/flash.cpp` and must stay in the same order as `flight_data_manager.py`.
+`src/flash.cpp` and must stay in the same order as `desktop/main.js`.
 The state values are `IDLE`, `PAD`, `BOOST`, `CONTROL`, `DESCENT`, `LANDED`,
 `GROUND_TEST_ARMED`, and `GROUND_TEST_RECORDING`.
 
@@ -48,7 +48,7 @@ has been checked.
 
 ### GUI
 
-Run `python app.py`, open the post-flight/download view, connect to the board,
+Run `npm start`, open the Flights & analytics view, connect to the board,
 download the desired flight, and verify the saved plot or CSV before deleting
 the board copy. GUI downloads are stored under
 `~/.airbrakes_ground_station/flight_data/` by default.
@@ -63,12 +63,8 @@ pip install pyserial
 
 Then use:
 
-```bash
-python flight_data_manager.py                # interactive menu
-python flight_data_manager.py list
-python flight_data_manager.py get <n>
-python flight_data_manager.py download-all
-```
+Use the unified desktop app for listing, downloading, and deleting flights.
+It preserves the same serial protocol and local data location.
 
 CLI downloads are written to `flight_data/` as timestamped CSV files. The
 script detects the board from its USB descriptor, falls back to Pico-family

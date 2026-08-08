@@ -131,14 +131,14 @@ The desktop GUI provides configuration, build/flash, serial downloads, and
 plotting:
 
 ```bash
-pip install -r app/requirements.txt
-python app.py
+npm install
+npm start
 ```
 
 On Windows, `app.bat` is the double-click launcher. On macOS, run
 `chmod +x app.command` once, then double-click `app.command` in Finder. For the
-lower-level serial workflow, use `python flight_data_manager.py`; see
-[`DATA.md`](DATA.md).
+The app saves flights to the same local folder as before; see
+[`DATA.md`](DATA.md) for the wire protocol.
 
 ## Firmware overview
 
@@ -202,11 +202,10 @@ registry CAN package to `platformio.ini`; PlatformIO should use the local copy.
 
 ## Ground station
 
-- `app.py` launches the desktop GUI; `app.bat` and `app.command` are the
-  Windows and macOS double-click launchers.
-- `app/` contains the GUI, serial link, configuration editor, coast-table
-  tools, plotting, and firmware helpers.
-- `flight_data_manager.py` is the command-line downloader and CSV converter.
+- `desktop/renderer.html` is the unified Electron UI; `app.bat` and
+  `app.command` are the Windows and macOS double-click launchers.
+- `desktop/main.js` provides the local serial, PlatformIO, configuration, and
+  flight-download bridge. `airbrakesDashboard.html` remains the analytics UI.
 
 The GUI and CLI use the same firmware protocol: `INFO`, `LIST`, `CURRENT`,
 `GET <n>`, and `DELETE <n>`. For setup, safety checks, record layout, and
@@ -219,7 +218,7 @@ information here.
 include/              Firmware headers and shared configuration
 src/                  Firmware implementation
 lib/CAN/              Patched local CAN library
-app/                  Ground-station application modules
+desktop/              Unified Electron ground-station application
 sim/                  Coast-table generation and lookup tools
 tools/                Standalone ODrive CAN test source
 flight_data/          Downloaded CSV files
