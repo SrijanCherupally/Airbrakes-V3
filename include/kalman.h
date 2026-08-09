@@ -14,12 +14,16 @@ public:
     void reset();
     void setBias(float value);
 
-    // IMU update
-    void predict();
+    // IMU propagation.  The estimator supplies the measured interval rather
+    // than assuming its caller always executes at exactly the nominal rate.
+    void predict(float elapsedSeconds);
 
 
-    // Barometer update
-    void update();
+    // Barometer update.  The measurement is passed in explicitly so this
+    // class remains a pure state estimator (and can validate the innovation
+    // before changing altitude or velocity).
+    bool update(float altitudeMeasurement);
+    bool isAltitudeMeasurementPlausible(float altitudeMeasurement) const;
 
 
     // Add a velocity increment (e.g. recovered pre-roll dv at launch)

@@ -102,14 +102,37 @@ bool BARO::init() {
 
   readCoefficients();
 
-  // High rate: 32Hz, OSR=8x
+  // 32 Hz, 8x oversampling for both pressure and temperature.  Precision
+  // code 0x03 means 8x; its DPS368 compensation scale factor is 7,864,320.
+  // The former driver used the single-sample scale factor (524,288) while
+  // enabling result shifts intended only for >8x oversampling.  That made
+  // pressure compensation configuration-dependent and produced a severely
+  // compressed flight-altitude trace.
   dpsWrite(REG_PRS_CFG, 0x53);
-  dpsWrite(REG_TMP_CFG, 0xA3);
+  // The compensation coefficients are valid only for the sensor selected by
+  // TMP_COEF_SRCE.  Preserve that read-only source bit instead of assuming
+  // every DPS368 board uses the external/MEMS temperature sensor.
+  uint8_t tempSource = dpsRead8(REG_COEF_SRCE) & 0x80;
+  dpsWrite(REG_TMP_CFG, tempSource | 0x53);  // 32 Hz, 8x
+  kP = 7864320.0f;
+  kT = 7864320.0f;
 
-  // Enable result shift
+  // Result shifts are required only for oversampling above 8x.  Explicitly
+  // clear them so the raw values agree with the 8x scale factors above.
   uint8_t cfg = dpsRead8(REG_CFG_REG);
-  cfg |= (1 << 2) | (1 << 3);
+  cfg &= (uint8_t)~((1 << 2) | (1 << 3));
   dpsWrite(REG_CFG_REG, cfg);
+
+  // Read the configuration back.  A failed I2C write must not silently leave
+  // compensation using scale factors for a different sensor configuration.
+  uint8_t appliedPrsCfg = dpsRead8(REG_PRS_CFG);
+  uint8_t appliedTmpCfg = dpsRead8(REG_TMP_CFG);
+  uint8_t appliedCfg = dpsRead8(REG_CFG_REG);
+  if (appliedPrsCfg != 0x53 || appliedTmpCfg != (uint8_t)(tempSource | 0x53) ||
+      (appliedCfg & ((1 << 2) | (1 << 3))) != 0) {
+    lastError = "DPS368 configuration readback mismatch";
+    return false;
+  }
 
   // Start background mode
   dpsWrite(REG_MEAS_CFG, 0x07);

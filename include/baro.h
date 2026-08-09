@@ -24,6 +24,7 @@
 #define REG_RESET 0x0C
 #define REG_PROD_ID 0x0D
 #define REG_COEF 0x10
+#define REG_COEF_SRCE 0x28
 
 // ---------- MEAS_CFG FLAGS ----------
 #define MEAS_SENSOR_RDY (1u << 7)
@@ -55,8 +56,10 @@ class BARO {
   int32_t c00, c10;
   int16_t c01, c11, c20, c21, c30;
 
-  float kT = 524288.0f;  // OSR=8
-  float kP = 524288.0f;  // OSR=8
+  // DPS368 compensation scale factors for the configured 8x oversampling.
+  // These must exactly match PRS_CFG/TMP_CFG and the result-shift bits.
+  float kT = 7864320.0f;
+  float kP = 7864320.0f;
 
   float baselinePressure = 0.0f;
   const float R = 287.05f;

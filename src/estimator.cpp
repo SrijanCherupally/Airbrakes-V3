@@ -21,6 +21,10 @@ static float gRawBaro = 0.0f;
 static float gRawAccel = 0.0f;
 static float gVerticalAccel = 0.0f;
 static float gCalibratedBias = 0.0f;
+static uint32_t gLastPredictUs = 0;
+static uint32_t gCoastStartMs = 0;
+static uint8_t gBaroQualifiedSamples = 0;
+static bool gBaroQualified = false;
 
 bool biasActive = true;
 
@@ -28,6 +32,17 @@ bool biasActive = true;
 static constexpr float BIAS_STATIONARY_ACCEL_TOL = 0.6f;  // m/s^2 around 1g
 static constexpr float BIAS_STATIONARY_GYRO_MAX = 0.35f;  // rad/s
 static const float alpha_cd = 0.05f;  // Cd low-pass, ~4 Hz @ 500 Hz
+
+// Barometer pressure is not a static-pressure measurement while the vehicle
+// is under thrust or moving quickly.  Re-enable it only after coast has had
+// time to settle, then demand several innovation-valid readings before it can
+// change the state.  The motion thresholds intentionally match the original
+// Rock7-style coast gate; timing and consecutive-frame qualification prevent
+// a single early-coast pressure reading from producing a state jump.
+static constexpr uint32_t BARO_COAST_SETTLE_MS = 600;
+static constexpr float BARO_COAST_MAX_ACCEL = 4.0f * G;
+static constexpr float BARO_COAST_MAX_VELOCITY = 50.0f;
+static constexpr uint8_t BARO_QUALIFY_SAMPLES = 5;
 
 static void holdLoopRate(unsigned long startUs) {
   unsigned long deltmicros = micros() - startUs;
@@ -46,6 +61,10 @@ void filterReset() {
   baro.zeroAltitude();
   filter.reset();
   filter.setBias(gCalibratedBias);
+  gLastPredictUs = micros();
+  gCoastStartMs = 0;
+  gBaroQualifiedSamples = 0;
+  gBaroQualified = false;
   gCd = BASE_CD;
   if (baro.isConnected()) gRawBaro = baro.getAltitudeM();
   gRawAccel = 0.0f;
@@ -121,18 +140,59 @@ void filterUpdate() {
   static uint32_t lastLogMs = 0;
   uint32_t nowMs = millis();
   bool logDue = (lastLogMs == 0) || (uint32_t)(nowMs - lastLogMs) >= 10;
-  // Kalman prediction from world-frame vertical acceleration
-  filter.predict();
+  // Kalman prediction from world-frame vertical acceleration.  Do not assume
+  // that loop1 has executed exactly every 2 ms: SPI, serial interrupts and
+  // scheduler load otherwise scale velocity and altitude by the wrong factor.
+  uint32_t predictNowUs = micros();
+  float predictDt = (gLastPredictUs == 0)
+                        ? dTest
+                        : (float)(predictNowUs - gLastPredictUs) * 1.0e-6f;
+  gLastPredictUs = predictNowUs;
+  filter.predict(predictDt);
 
   // Barometer correction when a new sample is available
   if (baro.update()) {
     gRawBaro = baro.getAltitudeM();
-    // High accel / high velocity make the baro unreliable (Mach effects),
-    // so only fuse it during the calmer coast phase.
+    // Use the Rock7-style motion gate, augmented with explicit coast timing
+    // and qualification.  Continuous boost pressure data remains logged, but
+    // cannot change altitude or velocity.  A barometer can be accurate at
+    // apogee, so it is deliberately reintroduced once coast is slow and has
+    // settled rather than being deferred until descent.
     float accel = filter.getCorrectedAcceleration();
     float vel = filter.getVelocity();
-    if (fabsf(accel) < (4.0f * G) && fabsf(vel) < 55.0f) {
-      filter.update();
+    bool calmCoast = fabsf(accel) < BARO_COAST_MAX_ACCEL &&
+                     fabsf(vel) < BARO_COAST_MAX_VELOCITY;
+
+    if (currentState == STATE_CONTROL) {
+      if (gCoastStartMs == 0) gCoastStartMs = nowMs;
+      bool coastSettled = (uint32_t)(nowMs - gCoastStartMs) >=
+                         BARO_COAST_SETTLE_MS;
+      bool plausible = filter.isAltitudeMeasurementPlausible(gRawBaro);
+      if (coastSettled && calmCoast && plausible) {
+        if (gBaroQualifiedSamples < BARO_QUALIFY_SAMPLES) {
+          ++gBaroQualifiedSamples;
+        }
+        gBaroQualified =
+            gBaroQualifiedSamples >= BARO_QUALIFY_SAMPLES;
+      } else {
+        // A pressure frame that becomes inconsistent again must requalify;
+        // this handles transient airflow and pressure-port disturbances.
+        gBaroQualifiedSamples = 0;
+        gBaroQualified = false;
+      }
+    } else if (currentState == STATE_BOOST) {
+      gCoastStartMs = 0;
+      gBaroQualifiedSamples = 0;
+      gBaroQualified = false;
+    }
+
+    bool baroAidingAllowed =
+        (currentState == STATE_CONTROL && gBaroQualified && calmCoast) ||
+        (currentState == STATE_DESCENT && fabsf(accel) < (4.0f * G) &&
+         fabsf(vel) < 80.0f) ||
+        currentState == STATE_GROUND_TEST_RECORDING;
+    if (baroAidingAllowed) {
+      filter.update(gRawBaro);
     }
   }
 

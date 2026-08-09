@@ -2,8 +2,35 @@
 
 #include <math.h>
 
-#include "hardware.h"
 #include "orientation.h"
+
+namespace {
+// A DPS368 can be very quiet on the bench, but the installed airframe,
+// pressure port, vibration and airflow are the measurement system in flight.
+// Treating it as an 8 cm sensor made each 32 Hz pressure frame dominate the
+// inertial solution and caused matching steps in altitude and velocity.
+// Coast qualification keeps dynamic-pressure frames out, so at apogee the
+// pressure altitude can be trusted to about a metre without allowing it to
+// dominate the high-speed ascent solution.
+constexpr float kBaroStdDevM = 1.0f;
+constexpr float kBaroVariance = kBaroStdDevM * kBaroStdDevM;
+constexpr float kInnovationGateSigma = 4.0f;
+constexpr float kMinPredictDt = 0.00025f;
+constexpr float kMaxPredictDt = 0.050f;
+
+// A valid pressure observation may refine velocity through the covariance,
+// but it must not create a discontinuity in the flight state.  These limits
+// are per barometer frame (nominally 32 Hz), not limits on IMU propagation.
+constexpr float kMaxAltitudeCorrectionM = 0.75f;
+constexpr float kMaxVelocityCorrectionMps = 0.75f;
+constexpr float kMaxBiasCorrectionMps2 = 0.05f;
+
+static float limitMagnitude(float value, float limit) {
+  if (value > limit) return limit;
+  if (value < -limit) return -limit;
+  return value;
+}
+}  // namespace
 
 Kalman::Kalman(float dt) {
   this->dt = dt;
@@ -34,18 +61,18 @@ void Kalman::reset() {
 
   // Process noise
   Q_altitude = 0.8f * 0.8f;  // acceleration noise density
-  Q_velocity = 0.00001f;     // bias random walk density
-  Q_bias = 0.00001f;
+  Q_velocity = 0.0f;         // retained for compatibility with state layout
+  Q_bias = 0.005f * 0.005f;  // accelerometer-bias random walk density
 
   // DPS368 noise
-  R_altitude = 0.08f * 0.08f;
+  R_altitude = kBaroVariance;
 }
 
 void Kalman::setBias(float value) {
   bias = value;
 }
 
-void Kalman::predict() {
+void Kalman::predict(float elapsedSeconds) {
   getWorldAcceleration(worldAcc);
 
   // Reject impossible/non-finite IMU values before they can poison the
@@ -55,17 +82,28 @@ void Kalman::predict() {
     return;
   }
 
+  if (!isfinite(elapsedSeconds) || elapsedSeconds < kMinPredictDt ||
+      elapsedSeconds > kMaxPredictDt) {
+    // A debugger halt, I2C fault, or scheduler stall must not be interpreted
+    // as a long period of constant acceleration from one stale IMU sample.
+    correctedAcceleration = worldAcc[2] - bias;
+    return;
+  }
+
+  const float stepDt = elapsedSeconds;
   correctedAcceleration = worldAcc[2] - bias;
 
-  const float dt2 = dt * dt;
+  const float dt2 = stepDt * stepDt;
   const float halfDt2 = 0.5f * dt2;
-  altitude += velocity * dt + halfDt2 * correctedAcceleration;
-  velocity += correctedAcceleration * dt;
+  altitude += velocity * stepDt + halfDt2 * correctedAcceleration;
+  velocity += correctedAcceleration * stepDt;
 
   // Full constant-acceleration covariance propagation.  The previous code
   // discarded the altitude/velocity and altitude/bias cross-covariances, so
   // barometer measurements could not correct vertical velocity.
-  float F[3][3] = {{1.0f, dt, -halfDt2}, {0.0f, 1.0f, -dt}, {0.0f, 0.0f, 1.0f}};
+  float F[3][3] = {{1.0f, stepDt, -halfDt2},
+                   {0.0f, 1.0f, -stepDt},
+                   {0.0f, 0.0f, 1.0f}};
   float FP[3][3] = {};
   float nextP[3][3] = {};
   for (int i = 0; i < 3; ++i)
@@ -76,42 +114,68 @@ void Kalman::predict() {
       for (int k = 0; k < 3; ++k) nextP[i][j] += FP[i][k] * F[j][k];
   const float q = Q_altitude;
   nextP[0][0] += q * dt2 * dt2 * 0.25f;
-  nextP[0][1] += q * dt2 * dt * 0.5f;
-  nextP[1][0] += q * dt2 * dt * 0.5f;
+  nextP[0][1] += q * dt2 * stepDt * 0.5f;
+  nextP[1][0] += q * dt2 * stepDt * 0.5f;
   nextP[1][1] += q * dt2;
-  nextP[2][2] += Q_velocity * dt;
+  nextP[2][2] += Q_bias * stepDt;
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j) P[i][j] = nextP[i][j];
 }
 
-void Kalman::update() {
-  float altitudeMeasurement = baro.getAltitudeM();
+bool Kalman::isAltitudeMeasurementPlausible(float altitudeMeasurement) const {
   if (!isfinite(altitudeMeasurement) || fabsf(altitudeMeasurement) > 100000.0f ||
       !isfinite(altitude) || !isfinite(velocity) || !isfinite(bias)) {
-    return;
+    return false;
   }
 
   float error = altitudeMeasurement - altitude;
-  // A barometer frame jump is not physically plausible and must not be used
-  // to drag the integrated state into the 1e28-range values seen in logs.
-  if (!isfinite(error) || fabsf(error) > 1000.0f) {
-    return;
+  const float S = P[0][0] + R_altitude;
+  if (!isfinite(S) || S <= 0.0f) return false;
+  // Reject an implausible pressure frame relative to its expected variance.
+  // This catches I2C/pressure-port spikes without treating real, smooth
+  // ascent as an outlier.
+  if (!isfinite(error) || fabsf(error) > kInnovationGateSigma * sqrtf(S)) {
+    return false;
+  }
+  return true;
+}
+
+bool Kalman::update(float altitudeMeasurement) {
+  if (!isAltitudeMeasurementPlausible(altitudeMeasurement)) return false;
+
+  float error = altitudeMeasurement - altitude;
+  const float S = P[0][0] + R_altitude;
+
+  float K[3] = {P[0][0] / S, P[1][0] / S, P[2][0] / S};
+  float effectiveK[3] = {K[0], K[1], K[2]};
+  float correctionLimits[3] = {kMaxAltitudeCorrectionM,
+                               kMaxVelocityCorrectionMps,
+                               kMaxBiasCorrectionMps2};
+  for (int i = 0; i < 3; ++i) {
+    float requestedCorrection = K[i] * error;
+    float limitedCorrection = limitMagnitude(requestedCorrection, correctionLimits[i]);
+    // If a correction is limited, use the corresponding reduced gain in the
+    // covariance update as well.  Shrinking P with the original, much larger
+    // gain would make the filter falsely believe a large jump had been
+    // applied and prevent later valid measurements from helping.
+    if (requestedCorrection != 0.0f) {
+      effectiveK[i] = limitedCorrection / error;
+    }
   }
 
-  const float S = P[0][0] + R_altitude;
-  if (!isfinite(S) || S <= 0.0f) return;
-  float K[3] = {P[0][0] / S, P[1][0] / S, P[2][0] / S};
-  altitude += K[0] * error;
-  velocity += K[1] * error;
-  bias += K[2] * error;
+  altitude += effectiveK[0] * error;
+  velocity += effectiveK[1] * error;
+  bias += effectiveK[2] * error;
 
   float oldP[3][3];
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j) oldP[i][j] = P[i][j];
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j)
-      P[i][j] = oldP[i][j] - K[i] * oldP[0][j] - oldP[i][0] * K[j] +
-                K[i] * S * K[j];
+      P[i][j] = oldP[i][j] - effectiveK[i] * oldP[0][j] -
+                oldP[i][0] * effectiveK[j] +
+                effectiveK[i] * S * effectiveK[j];
+  return true;
 }
 
 void Kalman::injectVelocity(float dv) {
