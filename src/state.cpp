@@ -33,6 +33,7 @@ static bool groundTestClosing = false;
 // permits barometer aiding.
 static uint32_t boostDecelerationStartMs = 0;
 static constexpr uint32_t BOOST_TO_CONTROL_CONFIRM_MS = 250;
+static uint32_t launchStartMs = 0;
 
 const char* stateName(State state) {
   static const char* const names[] = {"IDLE", "PAD", "BOOST", "CONTROL",
@@ -203,6 +204,7 @@ void stateUpdate() {
         if (launchElapsed > PAD_LAUNCH_CHECK_DELAY_MS) {
           if (estVelocity() > LAUNCH_VEL && estAccel() > LAUNCH_ACCEL) {
             currentState = STATE_BOOST;
+            launchStartMs = millis();
             boostDecelerationStartMs = 0;
             resetPadLaunchTracking();
           }
@@ -219,13 +221,17 @@ void stateUpdate() {
       debugPrintf("STATE: PAD\n");
       break;
 
-    case STATE_BOOST:
+    case STATE_BOOST: {
       ledWrite(1.0f, 0.0f, 0.0f);  // Solid red
       debugPrintf("STATE: BOOST\n");
 
       // Flight 2 crossed the old instantaneous gate at 0.742 s and then
       // returned to positive acceleration, entering coast while powered.
-      if (estVelocity() < VEL_CONTROL_START && estAltitude() > ALT_LANDED &&
+      bool minimumBurnTimeElapsed =
+          launchStartMs != 0 &&
+          (uint32_t)(millis() - launchStartMs) >= MOTOR_MIN_BURN_TIME_MS;
+      if (minimumBurnTimeElapsed && estVelocity() < VEL_CONTROL_START &&
+          estAltitude() > ALT_LANDED &&
           estAccel() < 0.0f) {
         if (boostDecelerationStartMs == 0) {
           boostDecelerationStartMs = millis();
@@ -238,6 +244,7 @@ void stateUpdate() {
         boostDecelerationStartMs = 0;
       }
       break;
+    }
 
     case STATE_CONTROL:
       ledWrite(1.0f, 1.0f, 0.0f);  // Solid yellow
@@ -299,6 +306,7 @@ void stateUpdate() {
 void stateInit() {
   currentState = STATE_IDLE;
   lastNonIdleTime = millis();
+  launchStartMs = 0;
   boostDecelerationStartMs = 0;
   resetPadLaunchTracking();
 }
