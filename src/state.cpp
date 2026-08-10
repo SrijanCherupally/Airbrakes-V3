@@ -27,6 +27,13 @@ static bool groundTestOpening = true;
 static bool groundTestSweepStopped = false;
 static bool groundTestClosing = false;
 
+// A single projected-acceleration sample can briefly be negative during boost
+// as the vehicle tilts or vibrates. Require a persistent deceleration before
+// declaring coast, because that transition enables airbrake control and later
+// permits barometer aiding.
+static uint32_t boostDecelerationStartMs = 0;
+static constexpr uint32_t BOOST_TO_CONTROL_CONFIRM_MS = 250;
+
 const char* stateName(State state) {
   static const char* const names[] = {"IDLE", "PAD", "BOOST", "CONTROL",
                                       "DESCENT", "LANDED", "GROUND_TEST_ARMED",
@@ -196,6 +203,7 @@ void stateUpdate() {
         if (launchElapsed > PAD_LAUNCH_CHECK_DELAY_MS) {
           if (estVelocity() > LAUNCH_VEL && estAccel() > LAUNCH_ACCEL) {
             currentState = STATE_BOOST;
+            boostDecelerationStartMs = 0;
             resetPadLaunchTracking();
           }
         }
@@ -215,10 +223,19 @@ void stateUpdate() {
       ledWrite(1.0f, 0.0f, 0.0f);  // Solid red
       debugPrintf("STATE: BOOST\n");
 
-      // See if time for control (look at vertical vel)
+      // Flight 2 crossed the old instantaneous gate at 0.742 s and then
+      // returned to positive acceleration, entering coast while powered.
       if (estVelocity() < VEL_CONTROL_START && estAltitude() > ALT_LANDED &&
           estAccel() < 0.0f) {
-        currentState = STATE_CONTROL;
+        if (boostDecelerationStartMs == 0) {
+          boostDecelerationStartMs = millis();
+        } else if ((uint32_t)(millis() - boostDecelerationStartMs) >=
+                   BOOST_TO_CONTROL_CONFIRM_MS) {
+          currentState = STATE_CONTROL;
+          boostDecelerationStartMs = 0;
+        }
+      } else {
+        boostDecelerationStartMs = 0;
       }
       break;
 
@@ -239,7 +256,12 @@ void stateUpdate() {
       debugPrintf("STATE: DESCENT\n");
       odrvPosition(MOTOR_MIN);  // Closed
 
-      if (estAltitude() < ALT_LANDED) {
+      // Do not let an inertial-only altitude error end a flight. Flight 2
+      // reached this branch with a false -50 m/s velocity while the raw
+      // pressure altitude still showed the rocket tens of metres aloft.
+      // The pressure reference is independent of attitude and must agree
+      // before closing the log.
+      if (estAltitude() < ALT_LANDED && estRawBaro() < ALT_LANDED + 1.0f) {
         currentState = STATE_LANDED;
         // A landed flight is complete. Leaving the file open makes CURRENT
         // and DELETE treat it as an active log indefinitely.
@@ -277,6 +299,7 @@ void stateUpdate() {
 void stateInit() {
   currentState = STATE_IDLE;
   lastNonIdleTime = millis();
+  boostDecelerationStartMs = 0;
   resetPadLaunchTracking();
 }
 

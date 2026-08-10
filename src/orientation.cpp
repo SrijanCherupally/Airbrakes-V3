@@ -8,6 +8,8 @@
 
 #define loopTime 500  // Hz
 const float dT = 1.0f / (float)loopTime;
+static constexpr float GRAVITY_CORRECTION_MAX_ERROR = 3.5f;
+static constexpr float GRAVITY_CORRECTION_BANDWIDTH_HZ = 3.0f;
 
 float scaleAccZ = 1.0f;
 
@@ -67,7 +69,12 @@ static void multiplyQuaternion(const quaternion &a, const quaternion &b,
   result.z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
 }
 
-void updateOrientation() {
+void updateOrientation(float elapsedSeconds, bool correctTiltFromGravity) {
+  if (!isfinite(elapsedSeconds) || elapsedSeconds < 0.00025f ||
+      elapsedSeconds > 0.050f) {
+    elapsedSeconds = dT;
+  }
+
   quaternion dq;
 
   float gyro[3];
@@ -78,9 +85,9 @@ void updateOrientation() {
   float deltaRot[3];
   copyVector(deltaRot, gyro);
 
-  deltaRot[0] *= dT;
-  deltaRot[1] *= dT;
-  deltaRot[2] *= dT;
+  deltaRot[0] *= elapsedSeconds;
+  deltaRot[1] *= elapsedSeconds;
+  deltaRot[2] *= elapsedSeconds;
 
   float theta = sqrtf(deltaRot[0] * deltaRot[0] + deltaRot[1] * deltaRot[1] +
                       deltaRot[2] * deltaRot[2]);
@@ -112,6 +119,63 @@ void updateOrientation() {
   q = result;
 
   float mag = sqrtf(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+  if (mag > 1e-9f) {
+    q.w /= mag;
+    q.x /= mag;
+    q.y /= mag;
+    q.z /= mag;
+  }
+
+  if (!correctTiltFromGravity) return;
+
+  float accel[3] = {imu.getAccX(), imu.getAccY(), imu.getAccZ()};
+  float accelMagnitude = sqrtf(accel[0] * accel[0] + accel[1] * accel[1] +
+                               accel[2] * accel[2]);
+  if (!isfinite(accelMagnitude) ||
+      fabsf(accelMagnitude - G) > GRAVITY_CORRECTION_MAX_ERROR) {
+    return;
+  }
+
+  // Once the chute is deployed, gyro-only integration cannot maintain the
+  // gravity direction through the vehicle's rotation. Reconstruct a tilt-only
+  // attitude from specific force and blend it with the gyro attitude. Keep
+  // yaw from the gyro because gravity cannot observe heading.
+  normalizeVector(accel);
+  float roll = atan2f(accel[1], accel[2]);
+  float pitch = -asinf(accel[0]);
+  float yaw = atan2f(2.0f * (q.w * q.z + q.x * q.y),
+                     1.0f - 2.0f * (q.y * q.y + q.z * q.z));
+  float halfRoll = 0.5f * roll;
+  float halfPitch = 0.5f * pitch;
+  float halfYaw = 0.5f * yaw;
+  quaternion gravityTilt = {
+      cosf(halfRoll) * cosf(halfPitch) * cosf(halfYaw) +
+          sinf(halfRoll) * sinf(halfPitch) * sinf(halfYaw),
+      sinf(halfRoll) * cosf(halfPitch) * cosf(halfYaw) -
+          cosf(halfRoll) * sinf(halfPitch) * sinf(halfYaw),
+      cosf(halfRoll) * sinf(halfPitch) * cosf(halfYaw) +
+          sinf(halfRoll) * cosf(halfPitch) * sinf(halfYaw),
+      cosf(halfRoll) * cosf(halfPitch) * sinf(halfYaw) -
+          sinf(halfRoll) * sinf(halfPitch) * cosf(halfYaw)};
+
+  // Quaternions q and -q represent the same attitude. Align signs before
+  // normalized interpolation so the correction always takes the short path.
+  float dot = q.w * gravityTilt.w + q.x * gravityTilt.x +
+              q.y * gravityTilt.y + q.z * gravityTilt.z;
+  if (dot < 0.0f) {
+    gravityTilt.w = -gravityTilt.w;
+    gravityTilt.x = -gravityTilt.x;
+    gravityTilt.y = -gravityTilt.y;
+    gravityTilt.z = -gravityTilt.z;
+  }
+  float correction =
+      1.0f - expf(-2.0f * M_PI * GRAVITY_CORRECTION_BANDWIDTH_HZ *
+                   elapsedSeconds);
+  q.w += correction * (gravityTilt.w - q.w);
+  q.x += correction * (gravityTilt.x - q.x);
+  q.y += correction * (gravityTilt.y - q.y);
+  q.z += correction * (gravityTilt.z - q.z);
+  mag = sqrtf(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
   if (mag > 1e-9f) {
     q.w /= mag;
     q.x /= mag;

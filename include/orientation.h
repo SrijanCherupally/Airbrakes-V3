@@ -5,7 +5,9 @@
 // (declared in hardware.h) and integrates gyro rates.
 
 void initOrientation();
-void updateOrientation();
+// Integrate gyro rates using the actual estimator interval. During descent,
+// acceleration magnitude is close enough to 1 g to correct accumulated tilt.
+void updateOrientation(float elapsedSeconds, bool correctTiltFromGravity);
 
 // World-frame acceleration (m/s^2) with gravity removed on the Z axis.
 void getWorldAcceleration(float world[3]);

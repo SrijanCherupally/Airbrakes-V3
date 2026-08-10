@@ -113,7 +113,15 @@ void filterUpdate() {
 
   // Read IMU and propagate attitude
   imu.update();
-  updateOrientation();
+  uint32_t predictNowUs = micros();
+  float predictDt = (gLastPredictUs == 0)
+                        ? dTest
+                        : (float)(predictNowUs - gLastPredictUs) * 1.0e-6f;
+  gLastPredictUs = predictNowUs;
+  // Descent rotation makes gyro-only tilt drift into a false vertical
+  // acceleration. Specific force is near 1 g after deployment, so use it to
+  // keep gravity aligned without trusting it during boost or controlled coast.
+  updateOrientation(predictDt, currentState == STATE_DESCENT);
 
   // Keep raw sensor telemetry independent of the Kalman/barometer update.
   // Previously the logger used estAccel(), which is already bias-corrected,
@@ -143,11 +151,6 @@ void filterUpdate() {
   // Kalman prediction from world-frame vertical acceleration.  Do not assume
   // that loop1 has executed exactly every 2 ms: SPI, serial interrupts and
   // scheduler load otherwise scale velocity and altitude by the wrong factor.
-  uint32_t predictNowUs = micros();
-  float predictDt = (gLastPredictUs == 0)
-                        ? dTest
-                        : (float)(predictNowUs - gLastPredictUs) * 1.0e-6f;
-  gLastPredictUs = predictNowUs;
   filter.predict(predictDt);
 
   // Barometer correction when a new sample is available
