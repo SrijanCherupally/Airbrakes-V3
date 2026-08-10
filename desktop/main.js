@@ -11,6 +11,9 @@ const DATA_DIR = path.join(process.env.USERPROFILE || app.getPath('home'), '.air
 const FIELDS = ['time_ms','altitude_m','velocity_ms','accel_bias_ms2','raw_accel_ms2','vertical_accel_ms2','raw_baro_m','motor_pos','motor_vel','motor_cmd_pos','roll_rad','pitch_rad','yaw_rad','Cd','desired_Cd','motor_current','battery_voltage','state','axis_error'];
 const STATES = ['IDLE','PAD','BOOST','CONTROL','DESCENT','LANDED','GROUND_TEST_ARMED','GROUND_TEST_RECORDING'];
 let port;
+let connectedDevice = '';
+let reconnectBusy = false;
+let reconnectTimer;
 
 function win() { return BrowserWindow.getAllWindows()[0]; }
 function emit(channel, value) { win()?.webContents.send(channel, value); }
@@ -32,8 +35,69 @@ function transaction(cmd, done, timeout = 3500) {
 }
 async function command(cmd, prefix, timeout) { return transaction(cmd, line => !prefix || line.startsWith(prefix) ? line : undefined, timeout); }
 function takeLine(timeout = 3000) { return new Promise((resolve, reject) => { let text=''; const onData=chunk=>{text+=chunk.toString('utf8');const i=text.indexOf('\n');if(i>=0){clean();resolve(text.slice(0,i).trim())}}; const timer=setTimeout(()=>{clean();reject(new Error('Timed out waiting for flight computer response.'))},timeout); const clean=()=>{clearTimeout(timer);port?.off('data',onData)};port.on('data',onData); }); }
-async function closePort() { if (port?.isOpen) await new Promise(r => port.close(r)); port = null; }
-async function connectDevice(device) { await closePort(); port = new SerialPort({path:device,baudRate:115200,autoOpen:false}); try { await new Promise((res,rej)=>port.open(e=>e?rej(e):res())); await wait(2100); const info=await command('INFO','FLASH:STORAGE:', 5000); return info.replace('FLASH:STORAGE:','').trim(); } catch (error) { await closePort(); if (error?.code === 'EACCES' || /access denied/i.test(error?.message || '')) throw new Error(`${device} is already in use by another program. Close PlatformIO/VS Code serial monitor, Arduino Serial Monitor, and any prior ground-station window, then retry.`); throw error; } }
+async function closePort(notify = true) {
+  const old = port;
+  port = null;
+  connectedDevice = '';
+  if (old?.isOpen) await new Promise(resolve => old.close(() => resolve()));
+  if (notify) emit('connection-state', {connected:false});
+}
+async function connectDevice(device) {
+  await closePort(false);
+  const candidate = new SerialPort({path:device,baudRate:115200,autoOpen:false});
+  port = candidate;
+  let telemetryBuffer = Buffer.alloc(0);
+  candidate.on('data', chunk => {
+    telemetryBuffer = Buffer.concat([telemetryBuffer, Buffer.from(chunk)]);
+    for (;;) {
+      const end = telemetryBuffer.indexOf(10);
+      if (end < 0) break;
+      const line = telemetryBuffer.subarray(0, end).toString('utf8').trim();
+      telemetryBuffer = telemetryBuffer.subarray(end + 1);
+      if (/^BATTERY_VOLTAGE:-?\d+(?:\.\d+)?$/.test(line)) emit('serial-line', line);
+    }
+    if (telemetryBuffer.length > 128) telemetryBuffer = Buffer.alloc(0);
+  });
+  candidate.once('error', error => {
+    emit('operation-log', `Serial error on ${device}: ${error.message}`);
+    if (port === candidate) closePort().catch(() => {});
+  });
+  candidate.once('close', () => {
+    if (port === candidate) {
+      port = null;
+      connectedDevice = '';
+      emit('connection-state', {connected:false});
+    }
+  });
+  try {
+    await new Promise((res,rej)=>candidate.open(e=>e?rej(e):res()));
+    await wait(2100);
+    const info=await command('INFO','FLASH:STORAGE:', 5000);
+    connectedDevice = device;
+    emit('connection-state', {connected:true,device,info:info.replace('FLASH:STORAGE:','').trim()});
+    return info.replace('FLASH:STORAGE:','').trim();
+  } catch (error) {
+    await closePort(false);
+    if (error?.code === 'EACCES' || /access denied/i.test(error?.message || '')) throw new Error(`${device} is already in use by another program. Close PlatformIO/VS Code serial monitor, Arduino Serial Monitor, and any prior ground-station window, then retry.`);
+    throw error;
+  }
+}
+async function findAndConnect() {
+  if (reconnectBusy || port?.isOpen) return false;
+  reconnectBusy = true;
+  try {
+    for (const item of await SerialPort.list()) {
+      try { emit('operation-log', `Auto-connect: trying ${item.path}`); await connectDevice(item.path); return true; }
+      catch (error) { emit('operation-log', `Auto-connect: ${item.path} unavailable (${error.message})`); }
+    }
+  } finally { reconnectBusy = false; }
+  return false;
+}
+function startConnectionWatchdog() {
+  clearInterval(reconnectTimer);
+  reconnectTimer = setInterval(() => findAndConnect().catch(error => emit('operation-log', `Auto-connect scan failed: ${error.message}`)), 1500);
+  findAndConnect().catch(error => emit('operation-log', `Auto-connect scan failed: ${error.message}`));
+}
 function runPio(args) {
   return new Promise((resolve, reject) => {
     // The old app deliberately used Python's module invocation: `pio` is not
@@ -75,10 +139,10 @@ async function download(number) {
   const records=decodeRecords(payload); return {...await saveFlight(number,records,payload),records:records.length,bytes:payload.length};
 }
 
-app.whenReady().then(() => { const w = new BrowserWindow({width:1440,height:920,minWidth:1080,minHeight:700,backgroundColor:'#08111f',webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false}}); w.loadFile(path.join(__dirname,'renderer.html')); });
+app.whenReady().then(() => { const w = new BrowserWindow({width:1440,height:920,minWidth:1080,minHeight:700,backgroundColor:'#08111f',webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false}}); w.loadFile(path.join(__dirname,'renderer.html')); startConnectionWatchdog(); });
 ipcMain.handle('ports', async () => (await SerialPort.list()).map(p => ({path:p.path,label:`${p.path} — ${p.manufacturer || p.friendlyName || 'Serial device'}`})));
 ipcMain.handle('connect', (_, device) => connectDevice(device));
-ipcMain.handle('auto-connect', async () => { const ports = await SerialPort.list(); for (const item of ports) { for (let attempt=1;attempt<=2;attempt++) { try { emit('operation-log',`Auto-connect: trying ${item.path} (attempt ${attempt}/2)`); const info = await connectDevice(item.path); emit('operation-log',`Auto-connect: verified Airbrakes board on ${item.path}`); return {path:item.path, info}; } catch (error) { emit('operation-log',`Auto-connect: ${item.path} did not respond (${error.message})`); await wait(250); } } } throw new Error('No serial device responded to the Airbrakes INFO handshake. See Activity for each attempted port.'); });
+ipcMain.handle('auto-connect', async () => { await findAndConnect(); return {path:connectedDevice,info:connectedDevice?'Connected automatically.':''}; });
 ipcMain.handle('disconnect', closePort);
 ipcMain.handle('board-command', async (_, cmd) => command(cmd, cmd==='INFO'?'FLASH:STORAGE:':cmd==='BARO STATUS'?'DPS368_DIAG:':cmd.startsWith('GROUND_TEST')?'GROUND_TEST:':undefined));
 ipcMain.handle('list-flights', async () => { const out=[]; return transaction('LIST', line => { if(line==='FLASH:END') return out; if(line.startsWith('FLASH:FLIGHT:')) { const s=line.slice(13).trim(), m=s.match(/flight_(\d+)\.bin\s*\(([^)]+)\)/); if(m) out.push({num:Number(m[1]),label:s,active:s.includes('[ACTIVE]')}); } }); });

@@ -29,6 +29,7 @@ static uint32_t lastPositionDiagnosticMs = 0;
 static uint32_t lastTelemetryRequestMs = 0;
 static uint32_t lastTelemetryDiagnosticMs = 0;
 static uint32_t lastBatterySampleMs = 0;
+static uint32_t lastBatteryDiagnosticMs = 0;
 static uint32_t odriveRxFrames = 0;
 static uint32_t odriveTxFailures = 0;
 static uint32_t odriveTelemetryTimeouts = 0;
@@ -247,6 +248,12 @@ uint32_t odriveTelemetryTimeoutCount() { return odriveTelemetryTimeouts; }
 
 void serviceOdrive() {
   updateBatteryVoltage();
+  uint32_t batteryNow = millis();
+  if ((uint32_t)(batteryNow - lastBatteryDiagnosticMs) >= 1000) {
+    lastBatteryDiagnosticMs = batteryNow;
+    Serial.print("BATTERY_VOLTAGE:");
+    Serial.println(batteryVoltage, 2);
+  }
   // Poll the MCP2515, matching the known-good standalone implementation.
   // This also lets synchronous RTR telemetry requests receive their response.
   pumpEvents(CAN);
