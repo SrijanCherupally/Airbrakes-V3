@@ -320,6 +320,11 @@ const STATE_COLORS = {
   GROUND_TEST_RECORDING:     '#556270',
   UNKNOWN:                   '#333d46'
 };
+const STATE_NAMES = [
+  'STATE_IDLE', 'STATE_PAD', 'STATE_BOOST', 'STATE_CONTROL',
+  'STATE_DESCENT', 'STATE_LANDED', 'GROUND_TEST_ARMED',
+  'GROUND_TEST_RECORDING'
+];
 function colorForState(name){
   return STATE_COLORS[name] || STATE_COLORS.UNKNOWN;
 }
@@ -378,7 +383,13 @@ function parseCsvText(text, filename){
   }).filter(r => Number.isFinite(r.time_ms));
 
   rows.sort((a,b) => a.time_ms - b.time_ms);
-  rows.forEach(r => { r.time_s = r.time_ms / 1000.0; });
+  rows.forEach(r => {
+    r.time_s = r.time_ms / 1000.0;
+    // data.csv stores the compact firmware enum; derive its display name.
+    if (!r.state_name && Number.isInteger(r.state) && STATE_NAMES[r.state]) {
+      r.state_name = STATE_NAMES[r.state];
+    }
+  });
   return rows;
 }
 
@@ -660,24 +671,34 @@ function baseLayout(overrides){
 }
 
 function stateShapes(rows, yref){
-  // build contiguous-segment vrects for state_name, used as background context on every chart
+  // Build contiguous state bands used as background context on every chart.
   if (!rows.length || !('state_name' in rows[0])) return [];
   const shapes = [];
+  const annotations = [];
   let segStart = rows[0].time_s;
   let segState = rows[0].state_name;
   for (let i = 1; i <= rows.length; i++){
     const r = rows[i];
     const st = r ? r.state_name : null;
     if (st !== segState){
+      const segEnd = rows[i-1].time_s;
       shapes.push({
         type: 'rect', xref: 'x', yref: yref || 'paper',
-        x0: segStart, x1: rows[i-1].time_s, y0: 0, y1: 1,
+        x0: segStart, x1: segEnd, y0: 0, y1: 1,
         fillcolor: colorForState(segState), opacity: 0.07, line: { width: 0 }
       });
+      if (segEnd > segStart){
+        annotations.push({
+          x: (segStart + segEnd) / 2, xref: 'x', y: 1, yref: yref || 'paper',
+          text: segState.replace(/^STATE_/, ''), showarrow: false,
+          yanchor: 'bottom', font: { ...FONT, size: 9, color: colorForState(segState) },
+          bgcolor: 'rgba(10,13,16,0.72)', borderpad: 2, captureevents: false
+        });
+      }
       if (r){ segStart = r.time_s; segState = st; }
     }
   }
-  return shapes;
+  return { shapes, annotations };
 }
 
 const config = { responsive: true, displaylogo: false, modeBarButtonsToRemove: ['lasso2d','select2d'] };
@@ -872,54 +893,54 @@ function buildCharts(rows){
     panel(root, n++, 'Actuator phase portrait', 'Motor position vs velocity, colored by time — reveals actuation cycles', 'c_phase');
   }
 
-  const shapesAll = stateShapes(rows);
+  const stateOverlay = stateShapes(rows);
 
   if (document.getElementById('c_alt')){
     const traces = [];
     if (hasCol(rows,'raw_baro_m')) traces.push({ x, y: rows.map(r=>r.raw_baro_m), name:'Raw baro', mode:'lines', line:{color:'#ff5d73', width:1}, opacity:0.55 });
     if (hasCol(rows,'altitude_m')) traces.push({ x, y: rows.map(r=>r.altitude_m), name:'Filtered altitude', mode:'lines', line:{color:'#4fd6c8', width:2} });
-    makePlot('c_alt', traces, baseLayout({ shapes: shapesAll, yaxis: Object.assign({title:'Altitude (m)'}, AXIS_BASE) }));
+    makePlot('c_alt', traces, baseLayout({ ...stateOverlay, yaxis: Object.assign({title:'Altitude (m)'}, AXIS_BASE) }));
   }
   if (document.getElementById('c_vel')){
     makePlot('c_vel', [{ x, y: rows.map(r=>r.velocity_ms), name:'Velocity', mode:'lines', line:{color:'#4fd6c8', width:1.6} }],
-      baseLayout({ shapes: shapesAll, yaxis: Object.assign({title:'Velocity (m/s)'}, AXIS_BASE) }));
+      baseLayout({ ...stateOverlay, yaxis: Object.assign({title:'Velocity (m/s)'}, AXIS_BASE) }));
   }
   if (document.getElementById('c_accel')){
     const traces = [];
     if (hasCol(rows,'raw_accel_ms2')) traces.push({ x, y: rows.map(r=>r.raw_accel_ms2), name:'Raw accel', mode:'lines', line:{color:'#4b5761', width:1}, opacity:0.5 });
     if (hasCol(rows,'vertical_accel_ms2')) traces.push({ x, y: rows.map(r=>r.vertical_accel_ms2), name:'Vertical accel', mode:'lines', line:{color:'#4fd6c8', width:1.4} });
     if (hasCol(rows,'accel_bias_ms2')) traces.push({ x, y: rows.map(r=>r.accel_bias_ms2), name:'Accel bias', mode:'lines', line:{color:'#ff5d73', width:1.8} });
-    makePlot('c_accel', traces, baseLayout({ shapes: shapesAll, yaxis: Object.assign({title:'Accel (m/s²)'}, AXIS_BASE) }));
+    makePlot('c_accel', traces, baseLayout({ ...stateOverlay, yaxis: Object.assign({title:'Accel (m/s²)'}, AXIS_BASE) }));
   }
   if (document.getElementById('c_motorpos')){
     const traces = [];
     if (hasCol(rows,'motor_cmd_pos')) traces.push({ x, y: rows.map(r=>r.motor_cmd_pos), name:'Commanded', mode:'lines', line:{color:'#ffb454', width:1.6, dash:'dot'} });
     if (hasCol(rows,'motor_pos')) traces.push({ x, y: rows.map(r=>r.motor_pos), name:'Actual', mode:'lines', line:{color:'#4fd6c8', width:1.8} });
-    makePlot('c_motorpos', traces, baseLayout({ shapes: shapesAll, yaxis: Object.assign({title:'Position'}, AXIS_BASE) }));
+    makePlot('c_motorpos', traces, baseLayout({ ...stateOverlay, yaxis: Object.assign({title:'Position'}, AXIS_BASE) }));
   }
   if (document.getElementById('c_motorvel')){
     makePlot('c_motorvel', [{ x, y: rows.map(r=>r.motor_vel), name:'Motor velocity', mode:'lines', line:{color:'#8f7bff', width:1.2} }],
-      baseLayout({ shapes: shapesAll, yaxis: Object.assign({title:'Velocity'}, AXIS_BASE) }));
+      baseLayout({ ...stateOverlay, yaxis: Object.assign({title:'Velocity'}, AXIS_BASE) }));
   }
   if (document.getElementById('c_cd')){
     const traces = [];
     if (hasCol(rows,'desired_Cd')) traces.push({ x, y: rows.map(r=>r.desired_Cd), name:'Desired Cd', mode:'lines', line:{color:'#ffb454', width:1.8, dash:'dot'} });
     if (hasCol(rows,'Cd')) traces.push({ x, y: rows.map(r=>r.Cd), name:'Actual Cd', mode:'lines', line:{color:'#4fd6c8', width:2} });
-    makePlot('c_cd', traces, baseLayout({ shapes: shapesAll, yaxis: Object.assign({title:'Cd'}, AXIS_BASE) }));
+    makePlot('c_cd', traces, baseLayout({ ...stateOverlay, yaxis: Object.assign({title:'Cd'}, AXIS_BASE) }));
   }
   if (document.getElementById('c_orient')){
     const traces = [];
     if (hasCol(rows,'roll_rad')) traces.push({ x, y: rows.map(r=>r.roll_rad), name:'Roll', mode:'lines', line:{color:'#4fd6c8', width:1.3} });
     if (hasCol(rows,'pitch_rad')) traces.push({ x, y: rows.map(r=>r.pitch_rad), name:'Pitch', mode:'lines', line:{color:'#ffb454', width:1.3} });
     if (hasCol(rows,'yaw_rad')) traces.push({ x, y: rows.map(r=>r.yaw_rad), name:'Yaw', mode:'lines', line:{color:'#8f7bff', width:1.3} });
-    makePlot('c_orient', traces, baseLayout({ shapes: shapesAll, yaxis: Object.assign({title:'Angle (rad)'}, AXIS_BASE) }));
+    makePlot('c_orient', traces, baseLayout({ ...stateOverlay, yaxis: Object.assign({title:'Angle (rad)'}, AXIS_BASE) }));
   }
   if (document.getElementById('c_power')){
     const traces = [];
     if (hasCol(rows,'motor_current')) traces.push({ x, y: rows.map(r=>r.motor_current), name:'Motor current (A)', mode:'lines', line:{color:'#4fd6c8', width:1.3}, yaxis:'y' });
     if (hasCol(rows,'battery_voltage')) traces.push({ x, y: rows.map(r=>r.battery_voltage), name:'Battery voltage (V)', mode:'lines', line:{color:'#ffb454', width:1.6}, yaxis:'y2' });
     makePlot('c_power', traces, baseLayout({
-      shapes: shapesAll,
+      ...stateOverlay,
       yaxis: Object.assign({title:'Current (A)'}, AXIS_BASE),
       yaxis2: Object.assign({title:'Voltage (V)', overlaying:'y', side:'right'}, AXIS_BASE, {gridcolor:'rgba(0,0,0,0)'}),
     }));
@@ -933,7 +954,7 @@ function buildCharts(rows){
       traces.push({ x, y: rows.map(r=>r.desired_Cd - r.Cd), name:'Cd error', mode:'lines', line:{color:'#4fd6c8', width:1.3}, yaxis:'y2' });
     }
     makePlot('c_err', traces, baseLayout({
-      shapes: shapesAll,
+      ...stateOverlay,
       yaxis: Object.assign({title:'Motor error'}, AXIS_BASE),
       yaxis2: Object.assign({title:'Cd error', overlaying:'y', side:'right'}, AXIS_BASE, {gridcolor:'rgba(0,0,0,0)'}),
     }));
