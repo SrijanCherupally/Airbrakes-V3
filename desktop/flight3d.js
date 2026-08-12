@@ -144,30 +144,42 @@
   // narrow teal band and a wider teal airbrake module below it, and three
   // swept fins with rounded tips. Proportions are taken off a side-on photo
   // and expressed as fractions of overall length, nose at +Z, tail at -Z.
-  const BODY = [238, 236, 231];   // warm off-white tube and nose
-  const TEAL = [99, 197, 186];    // accent bands
-  const TAIL = [176, 180, 184];
-  const R = 0.033;                // body radius / overall length
-  const Z_TAIL = -0.5, Z_NOSE = 0.408, Z_TIP = 0.5;
-  const BAND_A = [-0.010, 0.020];  // narrow band
-  const BAND_B = [-0.130, -0.060]; // airbrake module
-  const FIN_SPAN = 0.061, FIN_ROOT = -0.380, FIN_TIP_Z = -0.487;
+  const BODY = [238, 237, 233];
+  const METAL = [183, 185, 184];
+  const TEAL = [55, 164, 174];
+  const TEAL_DARK = [26, 101, 108];
+  const INK_DARK = [33, 38, 42];
+  const R = 0.036;
+  const Z_TAIL = -0.5, Z_NOSE = 0.405, Z_TIP = 0.5;
+  const Z_SHOULDER = 0.025, Z_MODULE_TOP = -0.010;
+  const Z_MODULE_BOTTOM = -0.145, Z_LOWER_BOTTOM = -0.455;
+  const FIN_SPAN = 0.070, FIN_ROOT = -0.405, FIN_TIP_Z = -0.492;
 
   function makeRocket(brake) {
     const faces = [];
     const N = 20;
     const ring = (z, r) => Array.from({ length: N }, (_, i) => [Math.cos(i / N * TAU) * r, Math.sin(i / N * TAU) * r, z]);
 
-    // Tube, split at the band edges so the teal sections are separate faces.
-    const stations = [Z_TAIL, BAND_B[0], BAND_B[1], BAND_A[0], BAND_A[1], Z_NOSE];
-    for (let s = 0; s < stations.length - 1; s++) {
-      const z0 = stations[s], z1 = stations[s + 1], mid = (z0 + z1) / 2;
-      const inBand = (mid > BAND_A[0] && mid < BAND_A[1]) || (mid > BAND_B[0] && mid < BAND_B[1]);
-      const lo = ring(z0, R), hi = ring(z1, R);
+    // Main tubes and the stepped lower assembly from the reference profile.
+    const sections = [
+      [Z_TAIL, Z_LOWER_BOTTOM, 0.040, 0.040, TEAL_DARK],
+      [Z_LOWER_BOTTOM, Z_MODULE_BOTTOM, R, R, BODY],
+      [Z_MODULE_BOTTOM, Z_MODULE_BOTTOM + 0.010, 0.043, 0.043, TEAL],
+      [Z_MODULE_BOTTOM + 0.010, Z_MODULE_TOP, 0.043, 0.043, TEAL],
+      [Z_MODULE_TOP, Z_SHOULDER, 0.043, 0.043, TEAL],
+      [Z_SHOULDER, Z_SHOULDER + 0.018, 0.043, R, METAL],
+      [Z_SHOULDER + 0.018, Z_NOSE, R, R, BODY]
+    ];
+    for (const [z0, z1, r0, r1, color] of sections) {
+      const lo = ring(z0, r0), hi = ring(z1, r1);
       for (let i = 0; i < N; i++) {
         const j = (i + 1) % N;
-        faces.push({ pts: [lo[i], lo[j], hi[j], hi[i]], c: inBand ? TEAL : BODY, solid: true });
+        faces.push({ pts: [lo[i], lo[j], hi[j], hi[i]], c: color, solid: true });
       }
+    }
+    for (const [z0, z1, color] of [[Z_MODULE_TOP - 0.004, Z_MODULE_TOP, TEAL_DARK], [Z_MODULE_BOTTOM - 0.004, Z_MODULE_BOTTOM, TEAL_DARK]]) {
+      const lo = ring(z0, 0.044), hi = ring(z1, 0.044);
+      for (let i = 0; i < N; i++) { const j = (i + 1) % N; faces.push({ pts: [lo[i], lo[j], hi[j], hi[i]], c: color, solid: true }); }
     }
 
     // Ogive nose — elliptical profile, stacked rings to keep the curve.
@@ -186,20 +198,20 @@
       }
       prev = cur;
     }
-    faces.push({ pts: ring(Z_TAIL, R).reverse(), c: TAIL, solid: true });
+    faces.push({ pts: ring(Z_TAIL, R).reverse(), c: METAL, solid: true });
 
-    // Three swept fins with a curved leading edge and rounded tip.
+    // Three broad, rounded lower fins; the third stays visible while orbiting.
     for (let k = 0; k < 3; k++) {
       const a = k / 3 * TAU, ca = Math.cos(a), sa = Math.sin(a);
-      const pts = [];
-      for (let i = 0; i <= 6; i++) {
-        const th = i / 6 * Math.PI / 2;
-        const r = R + FIN_SPAN * Math.sin(th);
-        const z = FIN_ROOT + (FIN_TIP_Z - FIN_ROOT) * (1 - Math.cos(th));
-        pts.push([ca * r, sa * r, z]);
+      const pts = [[ca * R, sa * R, FIN_ROOT]];
+      for (let i = 0; i <= 8; i++) {
+        const th = i / 8 * Math.PI;
+        const rr = R + FIN_SPAN * (0.68 + 0.32 * Math.sin(th));
+        const z = FIN_ROOT - 0.010 + (FIN_TIP_Z - FIN_ROOT + 0.010) * (0.5 - 0.5 * Math.cos(th));
+        pts.push([ca * rr, sa * rr, z]);
       }
       pts.push([ca * R, sa * R, Z_TAIL]);
-      faces.push({ pts, c: BODY });
+      faces.push({ pts, c: [206, 207, 205] });
     }
 
     // Airbrake flaps, hinged inside the lower teal module.
@@ -207,20 +219,22 @@
     for (let k = 0; k < 3; k++) {
       const a = k / 3 * TAU + Math.PI / 3, ca = Math.cos(a), sa = Math.sin(a);
       const r1 = R + 0.003 + open;
-      const c = brake > 0.02 ? [72, 82, 94] : [154, 162, 170];
+      const c = brake > 0.02 ? [72, 82, 94] : [30, 111, 118];
       faces.push({
-        pts: [[ca * R, sa * R, BAND_B[0] + 0.008], [ca * r1, sa * r1, BAND_B[0] + 0.014],
-        [ca * r1, sa * r1, BAND_B[1] - 0.014], [ca * R, sa * R, BAND_B[1] - 0.008]],
+        pts: [[ca * R, sa * R, Z_MODULE_TOP - 0.008], [ca * r1, sa * r1, Z_MODULE_TOP - 0.014],
+        [ca * r1, sa * r1, Z_MODULE_BOTTOM + 0.014], [ca * R, sa * R, Z_MODULE_BOTTOM + 0.008]],
         c
       });
     }
 
     // Rail button, the one asymmetric feature — useful for reading roll.
-    const rb = 0.010, zr = -0.185;
-    faces.push({
-      pts: [[R, -rb, zr - rb], [R + 0.010, -rb, zr - rb], [R + 0.010, rb, zr + rb], [R, rb, zr + rb]],
-      c: [60, 64, 70]
-    });
+    // Small body fasteners and a module access detail from the reference.
+    for (const [zr, rr] of [[0.170, 0.008], [-0.015, 0.007]]) {
+      faces.push({ pts: [[R, -rr, zr - rr], [R + 0.004, -rr, zr - rr], [R + 0.004, rr, zr + rr], [R, rr, zr + rr]], c: INK_DARK });
+      faces.push({ pts: [[R + 0.004, -rr * 0.45, zr - rr * 0.45], [R + 0.006, -rr * 0.45, zr - rr * 0.45], [R + 0.006, rr * 0.45, zr + rr * 0.45], [R + 0.004, rr * 0.45, zr + rr * 0.45]], c: [150, 153, 150] });
+    }
+    const rb = 0.008, zr = -0.078;
+    faces.push({ pts: [[R, -rb, zr - rb], [R + 0.006, -rb, zr - rb], [R + 0.006, rb, zr + rb], [R, rb, zr + rb]], c: INK_DARK });
     return faces;
   }
 
@@ -292,7 +306,8 @@
       const ctx = this.ctx;
       ctx.clearRect(0, 0, this.w, this.h);
       const sky = ctx.createLinearGradient(0, 0, 0, this.h);
-      sky.addColorStop(0, '#fdfdfe'); sky.addColorStop(1, '#eef1f5');
+      const dark = document.body.classList.contains('dark');
+      sky.addColorStop(0, dark ? '#18212b' : '#fdfdfe'); sky.addColorStop(1, dark ? '#0e141b' : '#eef1f5');
       ctx.fillStyle = sky; ctx.fillRect(0, 0, this.w, this.h);
     }
     project(p) {
