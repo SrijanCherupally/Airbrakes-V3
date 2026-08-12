@@ -13,7 +13,8 @@
   const TAU = Math.PI * 2;
   const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
   const STATE_NAMES = ['IDLE', 'PAD', 'BOOST', 'CONTROL', 'DESCENT', 'LANDED', 'GND ARMED', 'GND REC'];
-  const STATE_COLORS = ['#91a7bf', '#91a7bf', '#ffb66d', '#57ddff', '#ff79b7', '#7fe6ad', '#c79bff', '#c79bff'];
+  const STATE_COLORS = ['#8b98a6', '#8b98a6', '#d97706', '#0f9488', '#be185d', '#15803d', '#7c3aed', '#7c3aed'];
+  const INK = '#16202b', MUTED = '#68788a', ACCENT = '#0f9488';
 
   /* ---------------------------------------------------------------- math -- */
   const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -139,45 +140,93 @@
   }
 
   /* ----------------------------------------------------------- rocket mesh */
-  // Built in body frame with +Z along the nose. Units are fractions of overall
-  // length; the caller scales to the display size.
+  // Modelled on the actual airframe: slender white tube, long ogive nose, a
+  // narrow teal band and a wider teal airbrake module below it, and three
+  // swept fins with rounded tips. Proportions are taken off a side-on photo
+  // and expressed as fractions of overall length, nose at +Z, tail at -Z.
+  const BODY = [238, 236, 231];   // warm off-white tube and nose
+  const TEAL = [99, 197, 186];    // accent bands
+  const TAIL = [176, 180, 184];
+  const R = 0.033;                // body radius / overall length
+  const Z_TAIL = -0.5, Z_NOSE = 0.408, Z_TIP = 0.5;
+  const BAND_A = [-0.010, 0.020];  // narrow band
+  const BAND_B = [-0.130, -0.060]; // airbrake module
+  const FIN_SPAN = 0.061, FIN_ROOT = -0.380, FIN_TIP_Z = -0.487;
+
   function makeRocket(brake) {
     const faces = [];
-    const N = 16, R = 0.052;
-    const zTail = -0.5, zShoulder = 0.22, zTip = 0.5;
-    const ring = z => Array.from({ length: N }, (_, i) => [Math.cos(i / N * TAU) * R, Math.sin(i / N * TAU) * R, z]);
-    const low = ring(zTail), high = ring(zShoulder);
-    for (let i = 0; i < N; i++) {
-      const j = (i + 1) % N;
-      faces.push({ pts: [low[i], low[j], high[j], high[i]], c: [226, 238, 250], solid: true });
-      faces.push({ pts: [high[i], high[j], [0, 0, zTip]], c: [87, 221, 255], solid: true });
+    const N = 20;
+    const ring = (z, r) => Array.from({ length: N }, (_, i) => [Math.cos(i / N * TAU) * r, Math.sin(i / N * TAU) * r, z]);
+
+    // Tube, split at the band edges so the teal sections are separate faces.
+    const stations = [Z_TAIL, BAND_B[0], BAND_B[1], BAND_A[0], BAND_A[1], Z_NOSE];
+    for (let s = 0; s < stations.length - 1; s++) {
+      const z0 = stations[s], z1 = stations[s + 1], mid = (z0 + z1) / 2;
+      const inBand = (mid > BAND_A[0] && mid < BAND_A[1]) || (mid > BAND_B[0] && mid < BAND_B[1]);
+      const lo = ring(z0, R), hi = ring(z1, R);
+      for (let i = 0; i < N; i++) {
+        const j = (i + 1) % N;
+        faces.push({ pts: [lo[i], lo[j], hi[j], hi[i]], c: inBand ? TEAL : BODY, solid: true });
+      }
     }
-    faces.push({ pts: low.slice().reverse(), c: [70, 96, 128], solid: true });
-    // Fins
+
+    // Ogive nose — elliptical profile, stacked rings to keep the curve.
+    const M = 7;
+    let prev = ring(Z_NOSE, R);
+    for (let s = 1; s <= M; s++) {
+      const t = s / M;
+      const r = s === M ? 0 : R * Math.sqrt(Math.max(0, 1 - t * t));
+      const z = Z_NOSE + (Z_TIP - Z_NOSE) * t;
+      const cur = ring(z, r);
+      for (let i = 0; i < N; i++) {
+        const j = (i + 1) % N;
+        faces.push(s === M
+          ? { pts: [prev[i], prev[j], [0, 0, Z_TIP]], c: BODY, solid: true }
+          : { pts: [prev[i], prev[j], cur[j], cur[i]], c: BODY, solid: true });
+      }
+      prev = cur;
+    }
+    faces.push({ pts: ring(Z_TAIL, R).reverse(), c: TAIL, solid: true });
+
+    // Three swept fins with a curved leading edge and rounded tip.
     for (let k = 0; k < 3; k++) {
       const a = k / 3 * TAU, ca = Math.cos(a), sa = Math.sin(a);
-      faces.push({
-        pts: [[ca * R, sa * R, zTail], [ca * (R + 0.17), sa * (R + 0.17), zTail],
-        [ca * (R + 0.17), sa * (R + 0.17), zTail + 0.10], [ca * R, sa * R, zTail + 0.27]],
-        c: [255, 182, 109]
-      });
+      const pts = [];
+      for (let i = 0; i <= 6; i++) {
+        const th = i / 6 * Math.PI / 2;
+        const r = R + FIN_SPAN * Math.sin(th);
+        const z = FIN_ROOT + (FIN_TIP_Z - FIN_ROOT) * (1 - Math.cos(th));
+        pts.push([ca * r, sa * r, z]);
+      }
+      pts.push([ca * R, sa * R, Z_TAIL]);
+      faces.push({ pts, c: BODY });
     }
-    // Airbrake flaps — hinged, swinging out with deployment.
-    const open = 0.012 + brake * 0.15, zF = -0.06;
+
+    // Airbrake flaps, hinged inside the lower teal module.
+    const open = brake * 0.055;
     for (let k = 0; k < 3; k++) {
       const a = k / 3 * TAU + Math.PI / 3, ca = Math.cos(a), sa = Math.sin(a);
-      const c = brake > 0.02 ? [127, 230, 173] : [120, 150, 180];
+      const r1 = R + 0.003 + open;
+      const c = brake > 0.02 ? [72, 82, 94] : [154, 162, 170];
       faces.push({
-        pts: [[ca * R, sa * R, zF], [ca * (R + open), sa * (R + open), zF + 0.015],
-        [ca * (R + open), sa * (R + open), zF + 0.13], [ca * R, sa * R, zF + 0.13]],
+        pts: [[ca * R, sa * R, BAND_B[0] + 0.008], [ca * r1, sa * r1, BAND_B[0] + 0.014],
+        [ca * r1, sa * r1, BAND_B[1] - 0.014], [ca * R, sa * R, BAND_B[1] - 0.008]],
         c
       });
     }
+
+    // Rail button, the one asymmetric feature — useful for reading roll.
+    const rb = 0.010, zr = -0.185;
+    faces.push({
+      pts: [[R, -rb, zr - rb], [R + 0.010, -rb, zr - rb], [R + 0.010, rb, zr + rb], [R, rb, zr + rb]],
+      c: [60, 64, 70]
+    });
     return faces;
   }
 
   /* ------------------------------------------------------------- renderer */
-  const LIGHT = norm([-0.45, -0.6, 0.75]);
+  // Direction the light travels, so -Z lights upward-facing surfaces.
+  const LIGHT = norm([-0.4, -0.55, -0.73]);
 
   function makeCamera() { return { az: -0.9, el: 0.30, dist: 260, fov: 55, target: [0, 0, 60] }; }
 
@@ -243,7 +292,7 @@
       const ctx = this.ctx;
       ctx.clearRect(0, 0, this.w, this.h);
       const sky = ctx.createLinearGradient(0, 0, 0, this.h);
-      sky.addColorStop(0, '#0a1c31'); sky.addColorStop(0.55, '#07121f'); sky.addColorStop(1, '#050c15');
+      sky.addColorStop(0, '#fdfdfe'); sky.addColorStop(1, '#eef1f5');
       ctx.fillStyle = sky; ctx.fillRect(0, 0, this.w, this.h);
     }
     project(p) {
@@ -268,7 +317,7 @@
       ctx.font = '600 11px Inter, system-ui, sans-serif';
       ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
       const w = ctx.measureText(text).width;
-      ctx.fillStyle = 'rgba(7,17,31,.78)';
+      ctx.fillStyle = 'rgba(255,255,255,.86)';
       ctx.fillRect(p.x + 7, p.y + dy - 8, w + 10, 16);
       ctx.fillStyle = color;
       ctx.fillText(text, p.x + 12, p.y + dy);
@@ -282,8 +331,15 @@
         const n = norm(cross(sub(f.pts[1], f.pts[0]), sub(f.pts[2], f.pts[0])));
         const facing = dot(n, sub(f.pts[0], this.basis.eye));
         if (f.solid && facing > 0) continue;              // backface cull closed bodies
+        // Directional light plus a camera-facing ("headlight") term. Without the
+        // headlight, a vertical cylinder seen side-on shows only normals that
+        // are horizontal — most of them facing away from the light — and a white
+        // airframe renders mid-grey.
+        const centroid = f.pts.reduce((s, p) => [s[0] + p[0] / f.pts.length, s[1] + p[1] / f.pts.length, s[2] + p[2] / f.pts.length], [0, 0, 0]);
+        const toEye = norm(sub(this.basis.eye, centroid));
         const lit = f.solid ? Math.max(0, -dot(n, LIGHT)) : Math.abs(dot(n, LIGHT));
-        const sh = 0.34 + 0.66 * lit;
+        const head = Math.abs(dot(n, toEye));
+        const sh = Math.min(1, 0.55 + 0.18 * lit + 0.42 * head);
         out.push({ pts, depth: f.pts.reduce((s, p) => s + dot(sub(p, this.basis.eye), this.basis.fwd), 0) / f.pts.length, c: f.c, sh });
       }
       out.sort((a, b) => b.depth - a.depth);
@@ -293,9 +349,13 @@
         ctx.moveTo(f.pts[0].x, f.pts[0].y);
         for (let i = 1; i < f.pts.length; i++) ctx.lineTo(f.pts[i].x, f.pts[i].y);
         ctx.closePath();
+        // Stroked in its own fill colour: the model is ~150 facets, and any
+        // contrasting outline turns into solid ink once the rocket is small on
+        // screen. This only closes the anti-aliasing seams between facets.
         ctx.fillStyle = `rgb(${Math.round(f.c[0] * f.sh)},${Math.round(f.c[1] * f.sh)},${Math.round(f.c[2] * f.sh)})`;
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(6,14,24,.55)'; ctx.lineWidth = 0.6; ctx.stroke();
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = 0.5;
+        ctx.fill(); ctx.stroke();
       }
     }
   }
@@ -304,7 +364,7 @@
   const ui = {};
   let traj = null, rows = null, stage = null;
   let time = 0, playing = false, speed = 1, lastFrame = 0;
-  let camMode = 'follow', showTrack = true, showGrid = true, showShadow = true, showVec = true, rocketSize = 10;
+  let camMode = 'follow', showTrack = true, showGrid = true, showShadow = true, showVec = true, rocketSize = 20;
   let sourceName = '';
 
   function fmt(v, d = 1) { return Number.isFinite(v) ? v.toFixed(d) : '--'; }
@@ -321,7 +381,7 @@
     const lim = Math.ceil(reach / step) * step;
     for (let g = -lim; g <= lim + 1e-6; g += step) {
       const major = Math.abs(g) < 1e-6;
-      const col = major ? 'rgba(87,221,255,.42)' : 'rgba(90,140,190,.20)';
+      const col = major ? 'rgba(15,148,136,.38)' : 'rgba(110,132,155,.22)';
       stage.line([g, -lim, 0], [g, lim, 0], col, major ? 1.4 : 1);
       stage.line([-lim, g, 0], [lim, g, 0], col, major ? 1.4 : 1);
     }
@@ -330,19 +390,19 @@
       let prev = null;
       for (let i = 0; i <= 64; i++) {
         const a = i / 64 * TAU, p = [Math.cos(a) * r, Math.sin(a) * r, 0];
-        if (prev) stage.line(prev, p, 'rgba(87,221,255,.14)', 1);
+        if (prev) stage.line(prev, p, 'rgba(110,132,155,.20)', 1);
         prev = p;
       }
-      stage.label([r, 0, 0], `${r >= 1000 ? (r / 1000).toFixed(1) + ' km' : r + ' m'}`, 'rgba(145,167,191,.85)');
+      stage.label([r, 0, 0], `${r >= 1000 ? (r / 1000).toFixed(1) + ' km' : r + ' m'}`, MUTED);
     }
     // launch pad
     let prev = null;
     for (let i = 0; i <= 32; i++) {
       const a = i / 32 * TAU, p = [Math.cos(a) * step * 0.10, Math.sin(a) * step * 0.10, 0];
-      if (prev) stage.line(prev, p, '#7fe6ad', 2);
+      if (prev) stage.line(prev, p, '#15803d', 2);
       prev = p;
     }
-    stage.label([0, 0, 0], 'PAD', '#7fe6ad', 14);
+    stage.label([0, 0, 0], 'PAD', '#15803d', 14);
   }
 
   function drawTrail(upto) {
@@ -354,7 +414,7 @@
     }
     // remaining path, ghosted, so the whole flight reads at a glance
     for (let i = Math.max(1, upto + 1); i < s.length; i++) {
-      stage.line(s[i - 1].pos, s[i].pos, '#3d5c7d', 1.2, 0.45);
+      stage.line(s[i - 1].pos, s[i].pos, '#b3bdc8', 1.2, 0.6);
     }
   }
 
@@ -389,7 +449,6 @@
     } else if (camMode === 'chase') {
       const v = cur.vel;
       if (Math.hypot(v[0], v[1]) > 0.5) stage.cam.az = Math.atan2(v[1], v[0]) + Math.PI;
-      stage.cam.dist = Math.max(rocketSize * 8, 15);
     }
 
     stage.begin(target);
@@ -397,12 +456,12 @@
     drawTrail(cur.index);
 
     if (showShadow) {
-      stage.line([cur.pos[0], cur.pos[1], 0], cur.pos, 'rgba(87,221,255,.35)', 1);
+      stage.line([cur.pos[0], cur.pos[1], 0], cur.pos, 'rgba(15,148,136,.32)', 1);
       let prev = null;
       const r = rocketSize * 0.32;
       for (let i = 0; i <= 24; i++) {
         const a = i / 24 * TAU, p = [cur.pos[0] + Math.cos(a) * r, cur.pos[1] + Math.sin(a) * r, 0];
-        if (prev) stage.line(prev, p, 'rgba(87,221,255,.45)', 1.2);
+        if (prev) stage.line(prev, p, 'rgba(70,90,112,.40)', 1.2);
         prev = p;
       }
     }
@@ -412,19 +471,19 @@
     let prev = null;
     for (let i = 0; i <= 32; i++) {
       const a = i / 32 * TAU, p = [ap.pos[0] + Math.cos(a) * rocketSize * 0.5, ap.pos[1] + Math.sin(a) * rocketSize * 0.5, ap.pos[2]];
-      if (prev) stage.line(prev, p, '#ffb66d', 1.6, 0.9);
+      if (prev) stage.line(prev, p, '#c2670a', 1.6, 0.9);
       prev = p;
     }
-    stage.label(ap.pos, `APOGEE ${fmt(ap.alt)} m · T+${fmt(ap.t, 2)}s`, '#ffb66d');
+    stage.label(ap.pos, `APOGEE ${fmt(ap.alt)} m · T+${fmt(ap.t, 2)}s`, '#c2670a');
 
     if (showVec) {
       const v = cur.vel, m = Math.hypot(v[0], v[1], v[2]);
       if (m > 0.5) {
         const k = rocketSize * 1.6 / Math.max(m, 1) * Math.min(m / 20, 2.2);
-        stage.line(cur.pos, [cur.pos[0] + v[0] * k, cur.pos[1] + v[1] * k, cur.pos[2] + v[2] * k], '#7fe6ad', 2.2, 0.95);
+        stage.line(cur.pos, [cur.pos[0] + v[0] * k, cur.pos[1] + v[1] * k, cur.pos[2] + v[2] * k], '#15803d', 2.2, 0.95);
       }
       const ax = cur.matrix, a = [ax[0][2], ax[1][2], ax[2][2]], k = rocketSize * 1.1;
-      stage.line(cur.pos, [cur.pos[0] + a[0] * k, cur.pos[1] + a[1] * k, cur.pos[2] + a[2] * k], '#ff79b7', 1.6, 0.8);
+      stage.line(cur.pos, [cur.pos[0] + a[0] * k, cur.pos[1] + a[1] * k, cur.pos[2] + a[2] * k], '#be185d', 1.6, 0.8);
     }
 
     drawRocket(cur);
@@ -472,10 +531,11 @@
     if (!traj) return;
     const reach = Math.max(40, traj.extent.z[1],
       Math.abs(traj.extent.x[0]), traj.extent.x[1], Math.abs(traj.extent.y[0]), traj.extent.y[1]);
-    // Following the airframe needs a distance set by the rocket, not the flight:
-    // framing the whole 120 m trajectory leaves the model a few pixels wide.
-    // 8× model length puts the rocket at ~12% of viewport height at any scale.
-    stage.cam.dist = camMode === 'world' ? reach * 2.4 : Math.max(rocketSize * 8, 15);
+    // Follow distance is deliberately independent of rocketSize. Tying the two
+    // together keeps the model at a fixed fraction of the viewport, which makes
+    // the size slider do nothing visible — and a faithful 1:30 airframe at that
+    // fraction is only a couple of pixels wide.
+    stage.cam.dist = camMode === 'world' ? reach * 2.4 : clamp(reach * 0.5, 25, 400);
     stage.cam.el = 0.30;
     stage.cam.az = -0.9;
   }
@@ -491,7 +551,7 @@
     time = traj.t0;
     setPlaying(false);
     if (ui.scrub) { ui.scrub.min = String(traj.t0); ui.scrub.max = String(traj.t0 + traj.duration); ui.scrub.step = '0.005'; ui.scrub.value = String(traj.t0); }
-    rocketSize = Number(ui.size?.value || 10);
+    rocketSize = Number(ui.size?.value || 20);
     if (reframe) frameCamera();
     ui.file.textContent = `${sourceName} · ${traj.samples.length} samples · ${fmt(traj.duration, 2)} s · apogee ${fmt(traj.samples[traj.apogee].alt)} m · max ${fmt(traj.maxV)} m/s`;
     draw();
