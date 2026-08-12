@@ -1,8 +1,9 @@
 # Flight data
 
 This document covers the flight-log lifecycle: firmware storage, the serial
-protocol, downloads, and quick troubleshooting. General project setup belongs
-in [`README.md`](README.md); GUI-specific instructions belong in
+protocol, desktop downloads, local log layout, analytics, and troubleshooting.
+General project setup belongs in [`README.md`](README.md); GUI-specific
+instructions belong in
 [`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md).
 
 ## Storage on the board
@@ -46,29 +47,33 @@ has been checked.
 
 ## Downloading flights
 
-### GUI
+### Desktop GUI
 
-Run `npm start`, open the Flights & analytics view, connect to the board,
-download the desired flight, and verify the saved plot or CSV before deleting
-the board copy. GUI downloads are stored under
-`~/.airbrakes_ground_station/flight_data/` by default.
+Run `npm start`, open **Analytics**, connect to the board, and choose **List
+device flights**. Download one flight or choose **Download all safe copies**;
+the latter skips the active flight. Verify the saved CSV and charts before
+deleting the board copy. **Open saved flight folder** opens local storage.
 
-### Command line
+Logs are stored under `~/.airbrakes_ground_station/flight_data/` (equivalent to
+`C:\\Users\\<user>\\.airbrakes_ground_station\\flight_data` on Windows):
 
-Install the serial dependency if needed:
-
-```bash
-pip install pyserial
+```text
+flight_data/
+  flights/flight_0001/data.csv
+  ground_tests/ground_test_0001/data.csv
 ```
 
-Then use:
+The dashboard can select this folder and browse both categories. It charts
+available altitude, velocity, acceleration, attitude, drag coefficient,
+airbrake position, battery, and state-timeline columns. The **3D Replay** view
+opens a downloaded CSV or saved log and supports playback, scrubbing, 0.1×–4×
+speed, multiple camera modes, reframe, and orbit/pan/zoom controls. Horizontal
+ground track is reconstructed from the airframe axis because the board has no
+GPS; it is not measured position.
 
-Use the unified desktop app for listing, downloading, and deleting flights.
-It preserves the same serial protocol and local data location.
-
-CLI downloads are written to `flight_data/` as timestamped CSV files. The
-script detects the board from its USB descriptor, falls back to Pico-family
-ports, and offers a manual port selection when necessary.
+The current repository does not ship a separate command-line downloader;
+listing, downloading, and deleting are provided by the unified desktop app.
+The app preserves the firmware's serial protocol and local data location.
 
 ## Recommended after-flight sequence
 
@@ -77,7 +82,8 @@ ports, and offers a manual port selection when necessary.
 3. Download the flight.
 4. Check that the CSV is non-empty and spans the expected flight duration.
 5. Delete the board copy only after the local copy is safe.
-6. Use `sim/coast_table.py` or the GUI plots for model comparisons.
+6. Use `sim/coast_table.py`, the Analytics charts, or 3D Replay for model
+   comparisons.
 
 ## Troubleshooting
 

@@ -12,7 +12,7 @@ a closed-loop coefficient-of-drag controller.
 | Understand the firmware | [Firmware overview](#firmware-overview) |
 | Build and flash | [Quick start](#quick-start) |
 | Configure the ground station | [Ground station](#ground-station) and [`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md) |
-| Retrieve or analyze flight logs | [`DATA.md`](DATA.md) |
+| Retrieve, analyze, or replay flight logs | [`DATA.md`](DATA.md) and the desktop app's **Analytics** / **3D Replay** views |
 | Regenerate the coast table | `python sim/generate_coast_table.py` |
 | Check the repository layout | [Project layout](#project-layout) |
 
@@ -127,8 +127,21 @@ python sim/generate_coast_table.py
 
 ### Ground station
 
-The desktop GUI provides configuration, build/flash, serial downloads, and
-plotting:
+The desktop GUI provides four views:
+
+- **Operations** — serial connection, storage and DPS368 checks, live output,
+  ground-test controls, and firmware build/flash.
+- **Configuration** — edit supported `include/config.h` values and regenerate
+  the coast table from launch conditions.
+- **Analytics** — list board flights, download one or all non-active flights,
+  open local data, and browse flight and ground-test logs in Plotly charts.
+- **3D Replay** — load a downloaded CSV, scrub or play it at adjustable speed,
+  inspect telemetry, and orbit/pan/zoom the reconstructed rocket view.
+
+Downloaded logs are stored below the platform data directory (on Windows,
+`C:\\Users\\<user>\\.airbrakes_ground_station\\flight_data`) in category/run
+folders such as `flights/flight_0001/data.csv` and
+`ground_tests/ground_test_0001/data.csv`.
 
 ```bash
 npm install
@@ -204,11 +217,13 @@ registry CAN package to `platformio.ini`; PlatformIO should use the local copy.
 
 - `desktop/renderer.html` is the unified Electron UI; `app.bat` and
   `app.command` are the Windows and macOS double-click launchers.
-- `desktop/main.js` provides the local serial, PlatformIO, configuration, and
-  flight-download bridge. Analytics and replay are built into the Node/Electron renderer; replay supports left-drag orbiting, right-drag panning, and wheel zoom.
+- `desktop/main.js` provides the local serial, PlatformIO, configuration,
+  flight-download, local-log, and CSV-file bridge. `desktop/analytics.js`
+  provides the Plotly dashboard and `desktop/flight3d.js` provides replay.
+  The main UI remembers the selected light/dark theme.
 
-The GUI and CLI use the same firmware protocol: `INFO`, `LIST`, `CURRENT`,
-`GET <n>`, and `DELETE <n>`. For setup, safety checks, record layout, and
+The desktop GUI uses the firmware protocol: `INFO`, `LIST`, `CURRENT`, `GET
+<n>`, and `DELETE <n>`. For setup, safety checks, record layout, and
 troubleshooting, use [`DATA.md`](DATA.md) rather than duplicating that
 information here.
 
