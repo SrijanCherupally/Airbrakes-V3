@@ -12,6 +12,8 @@
     "electron": "^35.0.0"
   },
   "dependencies": {
+    "papaparse": "^5.4.1",
+    "plotly.js-dist-min": "^2.35.2",
     "serialport": "^13.0.0"
   },
   "allowScripts": {

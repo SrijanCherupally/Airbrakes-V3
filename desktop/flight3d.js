@@ -242,7 +242,7 @@
   // Direction the light travels, so -Z lights upward-facing surfaces.
   const LIGHT = norm([-0.4, -0.55, -0.73]);
 
-  function makeCamera() { return { az: -0.9, el: 0.30, dist: 260, fov: 55, target: [0, 0, 60] }; }
+  function makeCamera() { return { az: -0.9, el: 0.30, dist: 260, fov: 55, target: [0, 0, 60], pan: [0, 0, 0] }; }
 
   function viewBasis(cam, target) {
     const ce = Math.cos(cam.el), se = Math.sin(cam.el);
@@ -259,6 +259,7 @@
       this.ctx = canvas.getContext('2d');
       this.cam = makeCamera();
       this.w = 0; this.h = 0; this.dpr = 0;
+      this.baseTarget = [0, 0, 0];
       this.resize();
       this.bindInput();
     }
@@ -284,12 +285,23 @@
     }
     bindInput() {
       let drag = null;
-      this.canvas.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; this.canvas.setPointerCapture(e.pointerId); });
+      this.canvas.addEventListener('contextmenu', e => e.preventDefault());
+      this.canvas.addEventListener('pointerdown', e => {
+        if (e.button !== 0 && e.button !== 2 && e.button !== 1) return;
+        drag = { x: e.clientX, y: e.clientY, button: e.button };
+        this.canvas.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      });
       this.canvas.addEventListener('pointermove', e => {
         if (!drag) return;
-        this.cam.az -= (e.clientX - drag.x) * 0.008;
-        this.cam.el = clamp(this.cam.el + (e.clientY - drag.y) * 0.006, -1.45, 1.45);
-        drag = { x: e.clientX, y: e.clientY };
+        const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+        if (drag.button === 2 || drag.button === 1) this.panBy(dx, dy);
+        else {
+          this.cam.az -= dx * 0.008;
+          this.cam.el = clamp(this.cam.el + dy * 0.006, -1.45, 1.45);
+        }
+        drag = { x: e.clientX, y: e.clientY, button: drag.button };
+        e.preventDefault();
       });
       const stop = () => { drag = null; };
       this.canvas.addEventListener('pointerup', stop);
@@ -299,7 +311,14 @@
         this.cam.dist = clamp(this.cam.dist * Math.exp(e.deltaY * 0.0012), 6, 4000);
       }, { passive: false });
     }
+    panBy(dx, dy) {
+      const basis = viewBasis(this.cam, this.baseTarget);
+      const scale = this.cam.dist / Math.max(this.focal || 1, 1);
+      for (let i = 0; i < 3; i++) this.cam.pan[i] += (-basis.right[i] * dx + basis.up[i] * dy) * scale;
+    }
     begin(target) {
+      this.baseTarget = target.slice();
+      target = target.map((v, i) => v + this.cam.pan[i]);
       const b = viewBasis(this.cam, target);
       this.basis = b;
       this.focal = (this.h / 2) / Math.tan(this.cam.fov * Math.PI / 360);
@@ -553,6 +572,7 @@
     stage.cam.dist = camMode === 'world' ? reach * 2.4 : clamp(reach * 0.5, 25, 400);
     stage.cam.el = 0.30;
     stage.cam.az = -0.9;
+    stage.cam.pan = [0, 0, 0];
   }
 
   function load(text, name) {

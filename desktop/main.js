@@ -139,7 +139,7 @@ async function download(number) {
   const records=decodeRecords(payload); return {...await saveFlight(number,records,payload),records:records.length,bytes:payload.length};
 }
 
-app.whenReady().then(() => { const w = new BrowserWindow({width:1440,height:920,minWidth:1080,minHeight:700,backgroundColor:'#08111f',webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false}}); w.loadFile(path.join(__dirname,'renderer.html')); startConnectionWatchdog(); });
+app.whenReady().then(() => { const w = new BrowserWindow({width:1440,height:920,minWidth:1080,minHeight:700,backgroundColor:'#08111f',webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false,nodeIntegrationInSubFrames:true}}); w.loadFile(path.join(__dirname,'renderer.html')); startConnectionWatchdog(); });
 ipcMain.handle('ports', async () => (await SerialPort.list()).map(p => ({path:p.path,label:`${p.path} — ${p.manufacturer || p.friendlyName || 'Serial device'}`})));
 ipcMain.handle('connect', (_, device) => connectDevice(device));
 ipcMain.handle('auto-connect', async () => { await findAndConnect(); return {path:connectedDevice,info:connectedDevice?'Connected automatically.':''}; });
@@ -154,7 +154,6 @@ ipcMain.handle('build', () => runPio(['run'])); ipcMain.handle('flash', async ()
 ipcMain.handle('generate-coast', (_, conditions) => generateCoastTable(conditions));
 ipcMain.handle('defines-read', readDefines); ipcMain.handle('defines-save', (_, values) => saveDefines(values));
 ipcMain.handle('open-data', async () => { await fs.mkdir(DATA_DIR,{recursive:true}); require('electron').shell.openPath(DATA_DIR); return DATA_DIR; });
-ipcMain.handle('open-dashboard', () => { const child=new BrowserWindow({width:1500,height:960,webPreferences:{contextIsolation:true}}); child.loadFile(path.join(ROOT,'airbrakesDashboard.html')); });
 // 3D replay reads flight CSVs only: either a file the user picks in the dialog
 // or a folder already produced by saveFlight(). Nothing here writes.
 ipcMain.handle('pick-csv', async () => {
@@ -162,8 +161,34 @@ ipcMain.handle('pick-csv', async () => {
   if (result.canceled || !result.filePaths.length) return null;
   return readCsv(result.filePaths[0]);
 });
+ipcMain.handle('pick-flight-folder', async () => {
+  const result = await dialog.showOpenDialog(win(), {title:'Open flight_data folder', properties:['openDirectory'], defaultPath:DATA_DIR});
+  if (result.canceled || !result.filePaths.length) return null;
+  return readFlightFolder(result.filePaths[0]);
+});
 ipcMain.handle('read-csv', (_, target) => readCsv(target));
 async function readCsv(target) {
   const file = (await fs.stat(target)).isDirectory() ? path.join(target, 'data.csv') : target;
   return { file, name: path.basename(path.dirname(file)) === path.basename(DATA_DIR) ? path.basename(file) : `${path.basename(path.dirname(file))}/${path.basename(file)}`, text: await fs.readFile(file, 'utf8') };
+}
+async function readFlightFolder(target) {
+  const children = await fs.readdir(target, {withFileTypes:true});
+  const runs = [];
+  for (const child of children) {
+    if (!child.isDirectory()) continue;
+    const file = path.join(target, child.name, 'data.csv');
+    try { await fs.access(file); runs.push({name:child.name,path:file}); continue; } catch (_) {}
+    // The ground station keeps normal flights and ground tests in category
+    // directories. Accept that native layout as well as a flat flight_data
+    // folder, which is what the original dashboard supported.
+    let nested = [];
+    try { nested = await fs.readdir(path.join(target, child.name), {withFileTypes:true}); } catch (_) {}
+    for (const entry of nested) {
+      if (!entry.isDirectory()) continue;
+      const nestedFile = path.join(target, child.name, entry.name, 'data.csv');
+      try { await fs.access(nestedFile); runs.push({name:`${child.name}/${entry.name}`,path:nestedFile}); } catch (_) {}
+    }
+  }
+  try { await fs.access(path.join(target, 'data.csv')); runs.push({name:path.basename(target),path:path.join(target, 'data.csv')}); } catch (_) {}
+  return {folder:target,runs:runs.sort((a,b)=>b.name.localeCompare(a.name))};
 }

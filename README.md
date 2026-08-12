@@ -205,7 +205,7 @@ registry CAN package to `platformio.ini`; PlatformIO should use the local copy.
 - `desktop/renderer.html` is the unified Electron UI; `app.bat` and
   `app.command` are the Windows and macOS double-click launchers.
 - `desktop/main.js` provides the local serial, PlatformIO, configuration, and
-  flight-download bridge. `airbrakesDashboard.html` remains the analytics UI.
+  flight-download bridge. Analytics and replay are built into the Node/Electron renderer; replay supports left-drag orbiting, right-drag panning, and wheel zoom.
 
 The GUI and CLI use the same firmware protocol: `INFO`, `LIST`, `CURRENT`,
 `GET <n>`, and `DELETE <n>`. For setup, safety checks, record layout, and
