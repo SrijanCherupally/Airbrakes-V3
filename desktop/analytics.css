@@ -1,4 +1,5 @@
-:root {
+.analytics-embedded {
+& {
   --bg: #0a0d10;
   --panel: #10151a;
   --panel-2: #141a20;
@@ -18,12 +19,11 @@
 * {
   box-sizing: border-box;
 }
-html,
-body {
+& {
   min-height: 100%;
   margin: 0;
 }
-body {
+& {
   background:
     radial-gradient(
       1200px 700px at 85% -10%,
@@ -40,7 +40,7 @@ body {
   font-family: var(--sans);
   -webkit-font-smoothing: antialiased;
 }
-body::before {
+&::before {
   content: "";
   position: fixed;
   inset: 0;
@@ -400,4 +400,6 @@ select:focus {
   .chart.short {
     height: 220px;
   }
+}
+
 }

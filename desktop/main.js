@@ -139,7 +139,7 @@ async function download(number) {
   const records=decodeRecords(payload); return {...await saveFlight(number,records,payload),records:records.length,bytes:payload.length};
 }
 
-app.whenReady().then(() => { const w = new BrowserWindow({width:1440,height:920,minWidth:1080,minHeight:700,backgroundColor:'#08111f',webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false,nodeIntegrationInSubFrames:true}}); w.loadFile(path.join(__dirname,'renderer.html')); startConnectionWatchdog(); });
+app.whenReady().then(() => { const w = new BrowserWindow({width:1440,height:920,minWidth:1080,minHeight:700,backgroundColor:'#08111f',webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false}}); w.loadFile(path.join(__dirname,'renderer.html')); startConnectionWatchdog(); });
 ipcMain.handle('ports', async () => (await SerialPort.list()).map(p => ({path:p.path,label:`${p.path} — ${p.manufacturer || p.friendlyName || 'Serial device'}`})));
 ipcMain.handle('connect', (_, device) => connectDevice(device));
 ipcMain.handle('auto-connect', async () => { await findAndConnect(); return {path:connectedDevice,info:connectedDevice?'Connected automatically.':''}; });

@@ -1,4 +1,5 @@
-/* Full flight-data dashboard, moved out of the former monolithic HTML file. */
+/* Full flight-data dashboard, embedded in the Electron renderer. */
+(() => {
 const STATE_COLORS = {
   STATE_IDLE: "#4b5761",
   STATE_PAD: "#ffb454",
@@ -930,3 +931,4 @@ window.airbrakesAnalytics = {
   getChartIds: () => [...chartIds],
 };
 tryRestoreSession();
+})();
