@@ -155,3 +155,15 @@ ipcMain.handle('generate-coast', (_, conditions) => generateCoastTable(condition
 ipcMain.handle('defines-read', readDefines); ipcMain.handle('defines-save', (_, values) => saveDefines(values));
 ipcMain.handle('open-data', async () => { await fs.mkdir(DATA_DIR,{recursive:true}); require('electron').shell.openPath(DATA_DIR); return DATA_DIR; });
 ipcMain.handle('open-dashboard', () => { const child=new BrowserWindow({width:1500,height:960,webPreferences:{contextIsolation:true}}); child.loadFile(path.join(ROOT,'airbrakesDashboard.html')); });
+// 3D replay reads flight CSVs only: either a file the user picks in the dialog
+// or a folder already produced by saveFlight(). Nothing here writes.
+ipcMain.handle('pick-csv', async () => {
+  const result = await dialog.showOpenDialog(win(), {title:'Open flight log', properties:['openFile'], defaultPath:DATA_DIR, filters:[{name:'Flight log CSV',extensions:['csv']},{name:'All files',extensions:['*']}]});
+  if (result.canceled || !result.filePaths.length) return null;
+  return readCsv(result.filePaths[0]);
+});
+ipcMain.handle('read-csv', (_, target) => readCsv(target));
+async function readCsv(target) {
+  const file = (await fs.stat(target)).isDirectory() ? path.join(target, 'data.csv') : target;
+  return { file, name: path.basename(path.dirname(file)) === path.basename(DATA_DIR) ? path.basename(file) : `${path.basename(path.dirname(file))}/${path.basename(file)}`, text: await fs.readFile(file, 'utf8') };
+}
