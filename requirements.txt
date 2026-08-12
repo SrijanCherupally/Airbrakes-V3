@@ -1,0 +1,5 @@
+# Python dependencies for the simulation/table-generation scripts.
+numpy
+
+# The ground station is an Electron application and uses npm dependencies,
+# not Python packages. See package.json and run `npm install` for it.
