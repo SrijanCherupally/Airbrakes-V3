@@ -39,6 +39,7 @@ static constexpr uint32_t ODRIVE_HEARTBEAT_TIMEOUT_MS = 2500;
 static constexpr uint32_t ODRIVE_FEEDBACK_TIMEOUT_MS = 350;
 static constexpr uint32_t ODRIVE_ENABLE_RETRY_MS = 100;
 static bool preflightPassed = false;
+static bool batteryTelemetryEnabled = false;
 
 // MCP2515 callbacks execute from the interrupt handler.  Do not perform SPI,
 // Serial, or ODrive decoding there; queue the frame and process it in the main
@@ -224,6 +225,11 @@ void updateBatteryVoltage() {
                     BATTERY_DIVIDER_R2_OHM);
 }
 
+void setBatteryTelemetryEnabled(bool enabled) {
+  batteryTelemetryEnabled = enabled;
+  lastBatteryDiagnosticMs = millis();
+}
+
 void EnableOdrv() {
   // Kept for API compatibility. CAN/MCP2515 access is owned by core 0;
   // serviceOdrive() in loop() performs the enable/retry operation there.
@@ -248,11 +254,13 @@ uint32_t odriveTelemetryTimeoutCount() { return odriveTelemetryTimeouts; }
 
 void serviceOdrive() {
   updateBatteryVoltage();
-  uint32_t batteryNow = millis();
-  if ((uint32_t)(batteryNow - lastBatteryDiagnosticMs) >= 1000) {
-    lastBatteryDiagnosticMs = batteryNow;
-    Serial.print("BATTERY_VOLTAGE:");
-    Serial.println(batteryVoltage, 2);
+  if (batteryTelemetryEnabled) {
+    uint32_t batteryNow = millis();
+    if ((uint32_t)(batteryNow - lastBatteryDiagnosticMs) >= 1000) {
+      lastBatteryDiagnosticMs = batteryNow;
+      Serial.print("BATTERY_VOLTAGE:");
+      Serial.println(batteryVoltage, 2);
+    }
   }
   // Poll the MCP2515, matching the known-good standalone implementation.
   // This also lets synchronous RTR telemetry requests receive their response.

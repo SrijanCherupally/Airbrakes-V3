@@ -14,6 +14,7 @@ let port;
 let connectedDevice = '';
 let reconnectBusy = false;
 let reconnectTimer;
+let pioBusy = false;
 
 function win() { return BrowserWindow.getAllWindows()[0]; }
 function emit(channel, value) { win()?.webContents.send(channel, value); }
@@ -73,6 +74,8 @@ async function connectDevice(device) {
     await new Promise((res,rej)=>candidate.open(e=>e?rej(e):res()));
     await wait(2100);
     const info=await command('INFO','FLASH:STORAGE:', 5000);
+    // Battery telemetry is opt-in so upload can explicitly turn it off.
+    await command('BATTERY MONITOR ON', 'BATTERY_MONITOR:', 2000).catch(() => {});
     connectedDevice = device;
     emit('connection-state', {connected:true,device,info:info.replace('FLASH:STORAGE:','').trim()});
     return info.replace('FLASH:STORAGE:','').trim();
@@ -83,7 +86,8 @@ async function connectDevice(device) {
   }
 }
 async function findAndConnect() {
-  if (reconnectBusy || port?.isOpen) return false;
+  // Keep the CDC port closed while PlatformIO resets the RP2350 into BOOTSEL.
+  if (pioBusy || reconnectBusy || port?.isOpen) return false;
   reconnectBusy = true;
   try {
     for (const item of await SerialPort.list()) {
@@ -103,8 +107,8 @@ function runPio(args) {
     // The old app deliberately used Python's module invocation: `pio` is not
     // on PATH on this machine even though PlatformIO itself is installed.
     const child = spawn('py', ['-3', '-m', 'platformio', ...args], { cwd: ROOT, shell: false });
-    child.stdout.on('data', x => emit('operation-log', x.toString()));
-    child.stderr.on('data', x => emit('operation-log', x.toString()));
+    child.stdout.on('data', x => emit('pio-log', x.toString()));
+    child.stderr.on('data', x => emit('pio-log', x.toString()));
     child.on('error', e => reject(new Error(`Could not start PlatformIO. Install it with \`py -3 -m pip install platformio\`. Details: ${e.message}`)));
     child.on('close', code => code === 0 ? resolve('PlatformIO completed successfully.') : reject(new Error(`PlatformIO exited with code ${code}.`)));
   });
@@ -150,7 +154,27 @@ ipcMain.handle('download', (_, n) => download(n));
 ipcMain.handle('delete-flight', (_, n) => command(`DELETE ${n}`,'FLASH:'));
 ipcMain.handle('local-entries', (_, category) => localEntries(category));
 ipcMain.handle('local-delete', async (_, category, folder) => { if(!/^(flight|ground_test)_\d{4}$/.test(folder)) throw new Error('Invalid local log folder.'); await fs.rm(path.join(DATA_DIR,category,folder),{recursive:true,force:false}); return true; });
-ipcMain.handle('build', () => runPio(['run'])); ipcMain.handle('flash', async () => { await closePort(); return runPio(['run','-t','upload']); });
+ipcMain.handle('build', async () => {
+  if (pioBusy) throw new Error('A firmware operation is already running.');
+  pioBusy = true;
+  try { return await runPio(['run']); }
+  finally { pioBusy = false; }
+});
+ipcMain.handle('flash', async () => {
+  if (pioBusy) throw new Error('A firmware operation is already running.');
+  pioBusy = true;
+  clearInterval(reconnectTimer);
+  try {
+    // Stop periodic battery output before releasing CDC for the RP2350 reset.
+    if (port?.isOpen) await command('BATTERY MONITOR OFF', 'BATTERY_MONITOR:', 2000).catch(() => {});
+    await closePort();
+    await wait(250);
+    return await runPio(['run', '-t', 'upload']);
+  } finally {
+    pioBusy = false;
+    startConnectionWatchdog();
+  }
+});
 ipcMain.handle('generate-coast', (_, conditions) => generateCoastTable(conditions));
 ipcMain.handle('defines-read', readDefines); ipcMain.handle('defines-save', (_, values) => saveDefines(values));
 ipcMain.handle('open-data', async () => { await fs.mkdir(DATA_DIR,{recursive:true}); require('electron').shell.openPath(DATA_DIR); return DATA_DIR; });

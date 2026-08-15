@@ -50,6 +50,7 @@ extern uint32_t axisError;
 
 void setupHardware();
 void updateBatteryVoltage();
+void setBatteryTelemetryEnabled(bool enabled);
 void ledWrite(float r, float g, float b);
 bool hardwarePreflightCheck();
 bool hardwarePreflightPassed();

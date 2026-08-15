@@ -364,6 +364,12 @@ void handleFlashCommands() {
         }
 
         Serial.println(" used");
+      } else if (commandBuffer == "BATTERY MONITOR ON") {
+        setBatteryTelemetryEnabled(true);
+        Serial.println("BATTERY_MONITOR:ON");
+      } else if (commandBuffer == "BATTERY MONITOR OFF") {
+        setBatteryTelemetryEnabled(false);
+        Serial.println("BATTERY_MONITOR:OFF");
       } else if (commandBuffer == "BARO STATUS") {
         baro.printDiagnostics();
       } else if (commandBuffer == "GROUND_TEST START") {
