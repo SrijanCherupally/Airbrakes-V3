@@ -1,13 +1,6 @@
 # Airbrakes V3 Ground Station
 
-The ground station is one Electron desktop application. It combines board
-connection, pre-flight checks, DPS368 diagnostics, ground tests, configuration,
-firmware operations, flight downloads, serial monitoring, and the interactive
-analytics dashboard.
-
-The window has four views: **Operations**, **Configuration**, **Analytics**, and
-**3D Replay**. A light/dark theme toggle is available in the header and the
-selection is remembered between launches.
+The ground station is an Electron desktop application for connecting to the project hardware, viewing diagnostics, managing configuration, downloading recorded data, and exploring flight logs.
 
 ## Launch
 
@@ -18,44 +11,98 @@ npm install
 npm start
 ```
 
-On Windows, double-click `app.bat`. On macOS, make `app.command` executable
-once and double-click it. PlatformIO's `pio` command must be installed for
-build and flash operations.
+PlatformIO should be installed separately if you need the application's firmware build/flash integration.
+
+On Windows, `app.bat` is the convenience launcher. On macOS, make `app.command` executable once before using it.
+
+## Application views
+
+The application is organized into four primary views:
+
+| View | Purpose |
+| --- | --- |
+| **Operations** | Connection status, diagnostics, serial output, and supported development operations |
+| **Configuration** | Edit supported project configuration values |
+| **Analytics** | Browse downloaded data and inspect telemetry charts |
+| **3D Replay** | Replay a recorded CSV and inspect its telemetry interactively |
+
+A light/dark theme setting is available in the application header and is remembered between launches.
 
 ## Operations
 
-Use **Refresh ports**, **Auto-connect**, or **Connect selected**. A successful
-connection is verified with `INFO`. The view also provides storage and DPS368
-checks, ground-test status, live serial output, activity logs, firmware build
-and flash, and the shake-triggered ground-test arm/abort controls. Ground-test
-buttons affect real hardware; follow the power and pre-flight procedure in
-[`README.md`](README.md).
+Use the connection controls to select and connect to the appropriate serial port. The application can display board responses and project diagnostics through the serial monitor.
+
+The Operations view also exposes the project's supported storage and diagnostic commands. These controls communicate with the existing firmware interface; they do not replace the project's hardware or testing procedures.
+
+For hardware-related testing, follow the team's current safety and supervision requirements and the procedures maintained with the hardware documentation.
 
 ## Configuration
 
-The `config.h` page exposes supported values from `include/config.h`. Save the
-file, then build and flash when ready. The Coast table page regenerates the
-generated coast-table artifacts from rocket mass, temperature, humidity, and
-pressure; it does not change flight-control source code.
+The Configuration view exposes supported values from `include/config.h`.
 
-## Analytics and replay
+After changing configuration:
 
-In **Analytics**, connect to the board and choose **List device flights**.
-Download individual flights or all non-active flights, open the saved folder,
-and manage local `flights` and `ground_tests` logs. The embedded dashboard
-loads a selected `flight_data` folder and charts available telemetry.
+1. Review the resulting values carefully.
+2. Save only when the intended change is understood.
+3. Build the firmware and review compiler output before using the result elsewhere.
 
-In **3D Replay**, open a CSV or choose a saved log. Use playback, the scrubber,
-speed and camera selectors, and the telemetry HUD. Left-drag orbits, right-drag
-pans, and the wheel zooms. Horizontal track is estimated from the airframe
-axis because the flight computer has no GPS; altitude, velocity, attitude, and
-the other logged values are the source data.
+Simulation-generated artifacts should be regenerated through their documented tools rather than manually edited.
 
-## Storage and firmware safety
+## Analytics
 
-Downloaded flights are saved under
-`C:\Users\srija\.airbrakes_ground_station\flight_data` on Windows. The app
-uses category/run folders such as `flights/flight_0001/data.csv` and
-`ground_tests/ground_test_0001/data.csv`. It does not edit anything under
-`src/`; it sends the existing serial commands and can update
-`include/config.h` when explicitly saved.
+The Analytics view can list recorded data, download supported records from the connected device, and inspect locally saved logs.
+
+Downloaded data is organized under the application's local data directory. A typical layout is:
+
+```text
+flight_data/
+  flights/flight_0001/data.csv
+  ground_tests/ground_test_0001/data.csv
+```
+
+The exact location is platform-dependent; [`DATA.md`](DATA.md) documents the repository's data workflow.
+
+Use the Analytics view to inspect available telemetry and compare recorded runs. Keep original data copies until you have verified that the downloaded files are complete.
+
+## 3D Replay
+
+The 3D Replay view accepts a saved CSV/log and provides playback controls, a scrubber, playback speed, camera controls, and a telemetry display.
+
+The visualization is a reconstruction from recorded telemetry. It should not be interpreted as a direct measurement of quantities that the hardware does not record.
+
+## Development architecture
+
+The main desktop components are:
+
+- `desktop/main.js` — Electron main process and local-system integration.
+- `desktop/preload.js` — renderer/main-process API bridge.
+- `desktop/renderer.html` — primary application shell.
+- `desktop/renderer.js` — renderer-side application behavior.
+- `desktop/analytics.js` — data analytics and charting.
+- `desktop/flight3d.js` — replay visualization.
+
+When changing a user-facing workflow, update this document if the workflow is no longer accurately described.
+
+## Troubleshooting
+
+### Application will not start
+
+Run `npm install` again from the repository root and check the terminal output from `npm start` for the first reported error.
+
+### Serial port is unavailable
+
+Close other applications that may have the port open, reconnect the board, and refresh the available ports. If the problem persists, check the operating system's device list and the project's hardware documentation.
+
+### Data download does not complete
+
+Make sure another serial-monitor application is not using the same port. Retry the transfer and verify the resulting file before removing any original copy.
+
+### Configuration change is not reflected
+
+Confirm that the file was saved, rebuild the relevant software, and verify that the application is using the intended project checkout.
+
+## Related documentation
+
+- [`README.md`](README.md) — repository overview and development orientation.
+- [`DATA.md`](DATA.md) — data formats, storage, serial interfaces, and analysis.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution and pull-request guidelines.
