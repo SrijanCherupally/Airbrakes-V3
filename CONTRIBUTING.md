@@ -43,6 +43,14 @@ Documentation-only changes should say so explicitly when no executable tests are
 
 Keep shared interfaces in `include/` and implementations in `src/`. When changing a public interface, update all affected callers and the relevant documentation.
 
+### C++ formatting
+
+The repository uses the checked-in [`.clang-format`](.clang-format) configuration for C/C++ source and headers. Format changes with `clang-format` before opening a PR. Avoid mixing large formatting-only changes with behavioral changes unless the formatting is necessary for the change.
+
+The repository also provides a conservative [`.clang-tidy`](.clang-tidy) configuration for maintainability and bug-pattern checks. Treat diagnostics as review prompts; do not apply automated fixes blindly to embedded or hardware-facing code.
+
+Editors should respect the repository-wide [`.editorconfig`](.editorconfig) settings for line endings, whitespace, indentation, and final newlines.
+
 ### Desktop application
 
 Keep Electron main-process responsibilities separate from renderer code. When changing a user-facing workflow, update [`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md) as appropriate.
@@ -58,6 +66,10 @@ Prefer concise, task-oriented documentation. Link to the existing source of trut
 ## Validation
 
 For firmware changes, run the project's available PlatformIO build/tests that are appropriate for the affected code.
+
+For C++ formatting-only changes, run `clang-format --dry-run --Werror` on the affected source/header files where supported by the installed clang-format version.
+
+For static-analysis changes, run the configured `clang-tidy` checks against a valid compilation database when one is available. Review diagnostics manually before applying fixes.
 
 For desktop changes, run the application locally and exercise the affected UI path when practical.
 
