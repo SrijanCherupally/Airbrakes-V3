@@ -1,0 +1,12 @@
+Checks: >-
+  -*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  readability-*
+WarningsAsErrors: ''
+HeaderFilterRegex: '^(include|src)/.*\\.(h|hpp|c|cc|cpp|cxx)$'
+FormatStyle: file
+CheckOptions:
+  - key: readability-identifier-naming.IgnoreMainLikeFunctions
+    value: '1'
