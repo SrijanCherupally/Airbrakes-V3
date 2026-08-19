@@ -1,61 +1,64 @@
-# Flight data
+# Flight Data
 
-This document covers the flight-log lifecycle: firmware storage, the serial
-protocol, desktop downloads, local log layout, analytics, and troubleshooting.
-General project setup belongs in [`README.md`](README.md); GUI-specific
-instructions belong in
-[`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md).
+This document describes the repository's recorded-data interfaces: onboard storage, the firmware serial protocol, desktop downloads, local file organization, and analysis workflows.
 
-## Storage on the board
+General project setup belongs in [`README.md`](README.md). Ground-station usage belongs in [`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md).
 
-The RP2350 stores logs in the onboard LittleFS partition. Each flight is a
-file named `/flight_<N>.bin`; flight numbers are not reused. A file contains
-76-byte `FlightRecord` values:
+## Data flow
 
-| Field | Type |
-| --- | --- |
-| `time_ms` | `uint32_t` |
-| `altitude_m` through `battery_voltage` | 16 `float` values, including raw and corrected vertical acceleration |
-| `state`, `axis_error` | 2 × `uint32_t` |
+At a high level, recorded data moves through four stages:
 
-The Python struct format is `<I16fII`. The fields are defined in
-`src/flash.cpp` and must stay in the same order as `desktop/main.js`.
-The state values are `IDLE`, `PAD`, `BOOST`, `CONTROL`, `DESCENT`, `LANDED`,
-`GROUND_TEST_ARMED`, and `GROUND_TEST_RECORDING`.
+1. The firmware records structured telemetry to onboard storage.
+2. The desktop application retrieves supported records through the firmware's serial interface.
+3. Downloaded records are stored locally as CSV data.
+4. Analytics and replay tools read the local data for inspection.
 
-Logging is rate-limited to 100 Hz. Records are buffered in RAM in a 2048-record
-queue and flushed periodically from the main loop, keeping filesystem writes
-off the 500 Hz estimator path. The firmware warns when LittleFS has less than
-4 MB free. Check this with `INFO` before flight.
+Treat each stage as an interface. Changes to record layout or protocol should be reflected in both implementation and documentation.
 
-## Serial protocol
+## Onboard storage
 
-The board uses **115200 baud** and newline-terminated commands. Responses use
-the `FLASH:` prefix.
+The RP2350 firmware stores flight records in the onboard LittleFS partition. The current firmware uses files named `/flight_<N>.bin`; flight numbers are not reused.
+
+Each record is a fixed-size binary structure. The current Python-compatible layout is:
+
+```text
+<I16fII
+```
+
+The record definition is implemented by the firmware and consumed by the desktop download path. Keep the field order synchronized whenever the format changes.
+
+The logged state values currently include:
+
+- `IDLE`
+- `PAD`
+- `BOOST`
+- `CONTROL`
+- `DESCENT`
+- `LANDED`
+- `GROUND_TEST_ARMED`
+- `GROUND_TEST_RECORDING`
+
+## Serial interface
+
+The board communicates with the desktop application over a newline-terminated serial interface. The current connection uses **115200 baud**.
+
+The primary storage commands are:
 
 | Command | Purpose |
 | --- | --- |
-| `INFO` | Report used and total storage. |
-| `LIST` | List flight files and mark the active file. |
-| `CURRENT` | Report the flight number currently being logged. |
-| `GET <n>` | Stream flight `<n>` as `FLASH:DATA_START:<byte_count>`, exactly that many binary bytes, then `FLASH:END`. |
-| `DELETE <n>` | Delete flight `<n>` unless it is active. |
+| `INFO` | Report storage information. |
+| `LIST` | List stored flight files and identify the active file. |
+| `CURRENT` | Report the current flight number. |
+| `GET <n>` | Transfer a selected flight record. |
+| `DELETE <n>` | Remove a stored flight when permitted by the firmware. |
 
-The firmware flushes and temporarily closes an active file before serving
-`GET`, then reopens it for logging. Never delete a flight until its download
-has been checked.
+Binary transfer responses are framed by the firmware's `FLASH:` protocol. The desktop application is the preferred client for normal data retrieval.
 
-## Downloading flights
+## Downloaded data
 
-### Desktop GUI
+The unified desktop application provides the current download workflow. From **Analytics**, connect to the board, list the available records, and download the required data.
 
-Run `npm start`, open **Analytics**, connect to the board, and choose **List
-device flights**. Download one flight or choose **Download all safe copies**;
-the latter skips the active flight. Verify the saved CSV and charts before
-deleting the board copy. **Open saved flight folder** opens local storage.
-
-Logs are stored under `~/.airbrakes_ground_station/flight_data/` (equivalent to
-`C:\\Users\\<user>\\.airbrakes_ground_station\\flight_data` on Windows):
+Local data is organized into category/run folders similar to:
 
 ```text
 flight_data/
@@ -63,38 +66,68 @@ flight_data/
   ground_tests/ground_test_0001/data.csv
 ```
 
-The dashboard can select this folder and browse both categories. It charts
-available altitude, velocity, acceleration, attitude, drag coefficient,
-airbrake position, battery, and state-timeline columns. The **3D Replay** view
-opens a downloaded CSV or saved log and supports playback, scrubbing, 0.1×–4×
-speed, multiple camera modes, reframe, and orbit/pan/zoom controls. Horizontal
-ground track is reconstructed from the airframe axis because the board has no
-GPS; it is not measured position.
+The parent directory is platform-dependent and is managed by the desktop application. Do not assume a fixed absolute path in scripts intended for multiple computers.
 
-The current repository does not ship a separate command-line downloader;
-listing, downloading, and deleting are provided by the unified desktop app.
-The app preserves the firmware's serial protocol and local data location.
+## Data integrity
 
-## Recommended after-flight sequence
+Keep the original onboard copy until the downloaded data has been verified.
 
-1. Connect the board over USB and close any serial monitor.
-2. Run `LIST` or the downloader's list command.
-3. Download the flight.
-4. Check that the CSV is non-empty and spans the expected flight duration.
-5. Delete the board copy only after the local copy is safe.
-6. Use `sim/coast_table.py`, the Analytics charts, or 3D Replay for model
-   comparisons.
+A basic verification pass should check that:
+
+- the downloaded file exists and is non-empty;
+- the expected columns are present;
+- timestamps cover the expected recording interval;
+- there are no unexpected gaps or malformed rows;
+- the record count is plausible for the recording duration.
+
+If a transfer is interrupted, retry the download rather than treating a partial file as a complete dataset.
+
+## Analytics and replay
+
+The desktop application's **Analytics** view can chart available telemetry and compare recorded runs.
+
+The **3D Replay** view loads a saved CSV and provides playback, scrubbing, speed control, camera controls, and a telemetry HUD. The visualization is derived from the recorded data; it should not be treated as a direct measurement of quantities that are not present in the log.
+
+## Changing the data format
+
+Data formats should be treated as compatibility-sensitive interfaces.
+
+When adding, removing, or reordering fields:
+
+1. Update the firmware record definition.
+2. Update the desktop parser/serializer.
+3. Update any simulation or analysis code that consumes the affected fields.
+4. Update tests where available.
+5. Update this document.
+6. Consider whether existing recorded files still need to be readable.
+
+Avoid silent format changes. If a migration is necessary, document the old and new formats explicitly.
 
 ## Troubleshooting
 
-- **Board not found:** close other serial programs, reconnect USB, or choose
-  the port manually. The expected USB identifiers are `Srijan` and
-  `Airbrakes V3`.
-- **Download hangs:** make sure `pio device monitor` or another application is
-  not using the same port.
-- **Low or failed storage:** download existing flights and delete them. A
-  reformat is a last resort because it erases unretrieved data.
-- **No flight listed:** logging starts only after the state machine leaves
-  `IDLE` and begins recording.
-- **Corrupt record warning:** the downloader skips an incomplete trailing
-  record; verify the remaining row count and transfer again if needed.
+### Board is not detected
+
+Close other serial applications, reconnect the board, and refresh the available ports. Check the operating system device list if the port still does not appear.
+
+### Download is interrupted
+
+Ensure that only one application is using the serial port. Retry the download and verify the resulting file before deleting any source copy.
+
+### A record appears incomplete
+
+Check the transfer again and compare the resulting row count with the expected recording interval. Preserve the original source data while investigating.
+
+### No flight appears in the list
+
+Check that the firmware has created a recorded file and that the desktop application is connected to the intended board. Consult the firmware's current logging implementation before changing any data-handling code.
+
+## Source of truth
+
+For implementation details, inspect:
+
+- firmware logging implementation under `src/`;
+- logging interfaces under `include/`;
+- desktop serial/download handling under `desktop/`;
+- analysis and replay code under `desktop/` and `sim/`.
+
+Documentation should describe the current implementation rather than preserve obsolete behavior for compatibility with older revisions.
