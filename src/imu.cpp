@@ -25,12 +25,22 @@ bool IMU::begin() {
     return false;
   }
 
-  // Flight configuration: widest ranges so high-G boost does not saturate,
-  // sampled well above the 500 Hz estimator loop.
-  imu.setAccelFS(ICM42688::gpm16);
-  imu.setGyroFS(ICM42688::dps2000);
-  imu.setAccelODR(ICM42688::odr1k);
-  imu.setGyroODR(ICM42688::odr1k);
+  // Flight configuration: widest ranges so high-G boost does not saturate.
+  // 32 kHz is the ICM42688-P's maximum low-noise output rate; the estimator
+  // polls the most recent sample at 1 kHz, avoiding stale 1 kHz data while
+  // retaining ample margin for SPI and the second core's services.
+  if (imu.setAccelFS(ICM42688::gpm16) < 0 ||
+      imu.setGyroFS(ICM42688::dps2000) < 0 ||
+      imu.setAccelODR(ICM42688::odr32k) < 0 ||
+      imu.setGyroODR(ICM42688::odr32k) < 0 ||
+      // Keep the sensor's anti-alias filters enabled. At 32 kHz they reject
+      // vibration above the estimator bandwidth without sacrificing usable
+      // flight dynamics.
+      imu.setFilters(true, true) < 0) {
+    Serial.println("IMU flight configuration unsuccessful");
+    initialized = false;
+    return false;
+  }
 
   Serial.println("IMU initialized on SPI1!");
   sampleCount = 0;

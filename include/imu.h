@@ -46,7 +46,7 @@ class IMU {
   float gyr_x, gyr_y, gyr_z;
   float temp_c;
   // A 3-sample median removes isolated SPI/bus read glitches without adding
-  // meaningful latency to the 500 Hz estimator.  This is intentionally at
+  // meaningful latency to the 1 kHz estimator. This is intentionally at
   // the driver boundary so both ground tests and flight use identical data.
   float accXHistory[3] = {0.0f, 0.0f, 0.0f};
   float accYHistory[3] = {0.0f, 0.0f, 0.0f};

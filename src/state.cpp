@@ -80,7 +80,7 @@ void abortGroundTest() {
       currentState == STATE_GROUND_TEST_RECORDING) {
     odrvPosition(MOTOR_MIN);
     // Stop the producer before flushing/closing its queue. One estimator pass
-    // can already be in flight on core 1, so give it one 500 Hz period to
+    // can already be in flight on core 1, so give it one 1 kHz period to
     // observe the state change before the file is closed.
     currentState = STATE_IDLE;
     delay(3);
@@ -134,8 +134,8 @@ static void groundTestSweepUpdate() {
 constexpr uint32_t PAD_LAUNCH_WINDOW_MS = 100;
 constexpr uint32_t PAD_LAUNCH_CHECK_DELAY_MS = 50;
 constexpr float PAD_LAUNCH_ARM_ACCEL = 11.5f;  // accel magnitude (includes 1g)
-constexpr int PAD_PREROLL_SAMPLES = 150;       // 0.30 s at 500 Hz
-constexpr float PAD_LOOP_DT = 1.0f / 500.0f;
+constexpr int PAD_PREROLL_SAMPLES = 300;       // 0.30 s at 1 kHz
+constexpr float PAD_LOOP_DT = 1.0f / 1000.0f;
 
 float padPrerollAccel[PAD_PREROLL_SAMPLES];
 int padPrerollHead = 0;

@@ -14,15 +14,14 @@ namespace {
 // dominate the high-speed ascent solution.
 constexpr float kBaroStdDevM = 1.0f;
 constexpr float kBaroVariance = kBaroStdDevM * kBaroStdDevM;
-constexpr float kInnovationGateSigma = 4.0f;
 constexpr float kMinPredictDt = 0.00025f;
 constexpr float kMaxPredictDt = 0.050f;
 
 // A valid pressure observation may refine velocity through the covariance,
 // but it must not create a discontinuity in the flight state.  These limits
 // are per barometer frame (nominally 32 Hz), not limits on IMU propagation.
-constexpr float kMaxAltitudeCorrectionM = 0.75f;
-constexpr float kMaxVelocityCorrectionMps = 0.75f;
+constexpr float kMaxAltitudeCorrectionM = 8.0f;
+constexpr float kMaxVelocityCorrectionMps = 4.0f;
 constexpr float kMaxBiasCorrectionMps2 = 0.05f;
 
 static float limitMagnitude(float value, float limit) {
@@ -128,15 +127,11 @@ bool Kalman::isAltitudeMeasurementPlausible(float altitudeMeasurement) const {
     return false;
   }
 
-  float error = altitudeMeasurement - altitude;
-  const float S = P[0][0] + R_altitude;
-  if (!isfinite(S) || S <= 0.0f) return false;
-  // Reject an implausible pressure frame relative to its expected variance.
-  // This catches I2C/pressure-port spikes without treating real, smooth
-  // ascent as an outlier.
-  if (!isfinite(error) || fabsf(error) > kInnovationGateSigma * sqrtf(S)) {
-    return false;
-  }
+  // Innovation size cannot determine sensor validity. If inertial propagation
+  // has drifted, a valid barometer reading is necessarily a large innovation;
+  // rejecting it makes recovery impossible. Individual pressure frames are
+  // screened at the driver boundary and correction magnitude is bounded in
+  // update(), so only validate the measurement/state domain here.
   return true;
 }
 
