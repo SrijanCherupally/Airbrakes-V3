@@ -132,6 +132,7 @@ void abortGroundTest() {
   if (currentState == STATE_GROUND_TEST_ARMED ||
       currentState == STATE_GROUND_TEST_RECORDING) {
     odrvPosition(MOTOR_MIN);
+    odrv.setState(ODriveAxisState::AXIS_STATE_IDLE);
     // Stop the producer before flushing/closing its queue. One estimator pass
     // can already be in flight on core 1, so give it one 1 kHz period to
     // observe the state change before the file is closed.
@@ -181,6 +182,10 @@ static void groundTestSweepUpdate() {
     groundTestSweepStopped = true;
     Serial.println("GROUND_TEST:CLOSED_ENDPOINT_REACHED");
   }
+}
+
+bool odriveEnableAllowed() {
+  return currentState != STATE_IDLE && currentState != STATE_LANDED;
 }
 
 // Launch tracking in PAD: arm early and recover pre-roll dv before BOOST.
