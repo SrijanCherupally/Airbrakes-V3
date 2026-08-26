@@ -7,7 +7,7 @@ const fss = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const DATA_DIR = path.join(process.env.USERPROFILE || app.getPath('home'), '.airbrakes_ground_station', 'flight_data');
+const DATA_DIR = path.join(ROOT, 'flight_data');
 const FIELDS = ['time_ms','altitude_m','velocity_ms','accel_bias_ms2','raw_accel_ms2','vertical_accel_ms2','raw_baro_m','motor_pos','motor_vel','motor_cmd_pos','roll_rad','pitch_rad','yaw_rad','Cd','desired_Cd','motor_current','battery_voltage','state','axis_error'];
 const STATES = ['IDLE','PAD','BOOST','CONTROL','DESCENT','LANDED','GROUND_TEST_ARMED','GROUND_TEST_RECORDING'];
 let port;
