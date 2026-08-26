@@ -149,6 +149,22 @@ bool Kalman::update(float altitudeMeasurement) {
   float error = altitudeMeasurement - altitude;
   const float S = P[0][0] + R_altitude;
 
+  // Once barometric aiding is enabled, a very large innovation means the
+  // inertial solution has already diverged. Limiting a normal Kalman gain to
+  // 25 m would leave the velocity wrong for seconds and was the mechanism
+  // behind the kilometre-scale flight-log errors. Re-anchor altitude to the
+  // independent pressure measurement and bound the remaining inertial
+  // velocity before resuming normal covariance-based corrections.
+  if (fabsf(error) > 100.0f) {
+    altitude = altitudeMeasurement;
+    if (!isfinite(velocity) || fabsf(velocity) > 100.0f) velocity = 0.0f;
+    P[0][0] = kBaroVariance;
+    P[0][1] = P[1][0] = 0.0f;
+    P[1][1] = fminf(P[1][1], 25.0f);
+    P[0][2] = P[2][0] = P[1][2] = P[2][1] = 0.0f;
+    return true;
+  }
+
   float K[3] = {P[0][0] / S, P[1][0] / S, P[2][0] / S};
   float effectiveK[3] = {K[0], K[1], K[2]};
   float correctionLimits[3] = {kMaxAltitudeCorrectionM,

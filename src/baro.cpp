@@ -14,12 +14,11 @@ void BARO::zeroAltitude() {
 bool BARO::update() {
   ++updateCount;
   if (!initialized) return false;
-  // PRS_RDY remains asserted in continuous mode, so rate-limit reads to one
-  // conversion period. This prevents a tight estimator loop from repeatedly
-  // fusing the same held pressure register as if it were new data.
+  // Do not impose a software period here. The DPS368 clears PRS_RDY when its
+  // result is read, so the status bit itself is the conversion gate. This
+  // lets the estimator consume every completed conversion at the sensor's
+  // configured ODR instead of adding another latency limiter.
   uint32_t nowUs = micros();
-  if (lastPressureReadUs != 0 &&
-      (uint32_t)(nowUs - lastPressureReadUs) < 7500u) return false;
   uint8_t flags = dpsRead8(REG_MEAS_CFG);
   lastStatus = flags;
   if (flags & MEAS_TMP_RDY) rawT = readTempRaw();
@@ -90,7 +89,7 @@ bool BARO::init() {
   dpsWire.setSCL(DPS368_SCL);
   dpsWire.setSDA(DPS368_SDA);
   dpsWire.begin();
-  dpsWire.setClock(400000);  // 400kHz fast mode
+  dpsWire.setClock(1000000);  // 1MHz fast-mode-plus; minimizes read latency
 
   if (!selectAddress()) {
     lastError = "no DPS368 at 0x76 or 0x77";
@@ -110,7 +109,10 @@ bool BARO::init() {
   // Maximum 128 Hz pressure rate with 1x oversampling. At this rate the
   // Kalman filter, rather than the sensor, performs temporal averaging.
   constexpr uint8_t kPressureCfg = 0x70;
-  constexpr uint8_t kTemperatureCfg = 0x00;  // 1 Hz, 1x
+  // Run temperature conversions at the same maximum ODR. The pressure
+  // compensation uses the newest die-temperature result; retaining a 1 Hz
+  // temperature stream adds stale thermal error during a fast flight.
+  constexpr uint8_t kTemperatureCfg = 0x70;  // 128 Hz, 1x
   constexpr float kSingleSampleScale = 524288.0f;
   dpsWrite(REG_PRS_CFG, kPressureCfg);
   // The compensation coefficients are valid only for the sensor selected by
