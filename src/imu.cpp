@@ -48,16 +48,15 @@ bool IMU::begin() {
   return true;
 }
 
-float IMU::median3(float a, float b, float c) {
-  if (a > b) { float t = a; a = b; b = t; }
-  if (b > c) { float t = b; b = c; c = t; }
-  if (a > b) { float t = a; a = b; b = t; }
-  return b;
-}
-
-void IMU::update() {
-  if (!initialized) return;
-  imu.getAGT();
+bool IMU::update() {
+  if (!initialized) return false;
+  // The sensor is configured for its 32 kHz low-noise ODR. Never publish the
+  // same output register more than once per conversion period.
+  uint32_t nowUs = micros();
+  if (sampleTimeUs != 0 && (uint32_t)(nowUs - sampleTimeUs) < 30u) return false;
+  // getAGT() reports a failed SPI transaction. Do not timestamp or publish it
+  // as a fresh estimator sample.
+  if (imu.getAGT() < 0) return false;
   float ax = imu.accX() * G_TO_MS2;
   float ay = imu.accY() * G_TO_MS2;
   float az = imu.accZ() * G_TO_MS2;
@@ -67,32 +66,27 @@ void IMU::update() {
   float tc = imu.temp();
 
   // Never let a malformed SPI transaction enter the estimator or overwrite
-  // the last good sample.  The library can return finite, in-range garbage,
-  // so use a median over consecutive reads as a second line of defense.
+  // the last good sample. No software averaging is applied: the Kalman filter
+  // receives every valid read with minimum latency.
   if (!isfinite(ax) || !isfinite(ay) || !isfinite(az) ||
       !isfinite(gx) || !isfinite(gy) || !isfinite(gz) || !isfinite(tc) ||
       fabsf(ax) >= 200.0f || fabsf(ay) >= 200.0f || fabsf(az) >= 200.0f ||
       fabsf(gx) >= 40.0f || fabsf(gy) >= 40.0f || fabsf(gz) >= 40.0f) {
-    return;
+    return false;
   }
 
-  uint8_t slot = sampleCount % 3;
-  accXHistory[slot] = ax; accYHistory[slot] = ay; accZHistory[slot] = az;
-  gyrXHistory[slot] = gx; gyrYHistory[slot] = gy; gyrZHistory[slot] = gz;
-  ++sampleCount;
-  if (sampleCount < 3) {
-    acc_x = ax; acc_y = ay; acc_z = az;
-    gyr_x = gx; gyr_y = gy; gyr_z = gz;
-  } else {
-    acc_x = median3(accXHistory[0], accXHistory[1], accXHistory[2]);
-    acc_y = median3(accYHistory[0], accYHistory[1], accYHistory[2]);
-    acc_z = median3(accZHistory[0], accZHistory[1], accZHistory[2]);
-    gyr_x = median3(gyrXHistory[0], gyrXHistory[1], gyrXHistory[2]);
-    gyr_y = median3(gyrYHistory[0], gyrYHistory[1], gyrYHistory[2]);
-    gyr_z = median3(gyrZHistory[0], gyrZHistory[1], gyrZHistory[2]);
-  }
+  acc_x = ax;
+  acc_y = ay;
+  acc_z = az;
+  gyr_x = gx;
+  gyr_y = gy;
+  gyr_z = gz;
   temp_c = tc;
+  sampleTimeUs = micros();
+  ++sampleCount;
+  return true;
 }
+
 
 bool IMU::hasValidSample() const {
   return initialized && isfinite(acc_x) && isfinite(acc_y) && isfinite(acc_z) &&
