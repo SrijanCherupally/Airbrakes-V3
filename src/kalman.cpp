@@ -188,14 +188,38 @@ bool Kalman::update(float altitudeMeasurement) {
 
   if (!isfinite(altitude) || !isfinite(velocity)) return false;
 
+  // Joseph-form covariance update.  Unlike the compact (I-KH)P form used
+  // by Rock7, this remains symmetric and positive semidefinite in float32,
+  // including when a correction was deliberately limited above.
   float oldP[3][3];
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j) oldP[i][j] = P[i][j];
+
+  float I_KH[3][3] = {{1.0f - effectiveK[0], 0.0f, 0.0f},
+                      {-effectiveK[1], 1.0f, 0.0f},
+                      {-effectiveK[2], 0.0f, 1.0f}};
+  float temp[3][3] = {};
+  float joseph[3][3] = {};
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j)
-      P[i][j] = oldP[i][j] - effectiveK[i] * oldP[0][j] -
-                oldP[i][0] * effectiveK[j] +
-                effectiveK[i] * S * effectiveK[j];
+      for (int k = 0; k < 3; ++k) temp[i][j] += I_KH[i][k] * oldP[k][j];
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j)
+      for (int k = 0; k < 3; ++k) joseph[i][j] += temp[i][k] * I_KH[j][k];
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j)
+      joseph[i][j] += effectiveK[i] * S * effectiveK[j];
+
+  for (int i = 0; i < 3; ++i) {
+    for (int j = i + 1; j < 3; ++j) {
+      float symmetric = 0.5f * (joseph[i][j] + joseph[j][i]);
+      joseph[i][j] = symmetric;
+      joseph[j][i] = symmetric;
+    }
+    if (!isfinite(joseph[i][i]) || joseph[i][i] < 0.0f) return false;
+  }
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) P[i][j] = joseph[i][j];
   return true;
 }
 
