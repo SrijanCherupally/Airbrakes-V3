@@ -24,10 +24,14 @@ class IMU {
         gyr_z(0),
         temp_c(0),
         sampleCount(0),
+        sampleTimeUs(0),
         initialized(false) {}
 
   bool begin();
-  void update();
+  // Returns true only when a valid sensor transaction produced a new sample.
+  bool update();
+  uint32_t getSampleTimeUs() const { return sampleTimeUs; }
+  uint32_t getSampleCount() const { return sampleCount; }
 
   float getAccX() const { return acc_x; }
   float getAccY() const { return acc_y; }
@@ -40,21 +44,12 @@ class IMU {
   bool hasValidSample() const;
 
  private:
-  static float median3(float a, float b, float c);
   ICM42688 imu;
   float acc_x, acc_y, acc_z;
   float gyr_x, gyr_y, gyr_z;
   float temp_c;
-  // A 3-sample median removes isolated SPI/bus read glitches without adding
-  // meaningful latency to the 1 kHz estimator. This is intentionally at
-  // the driver boundary so both ground tests and flight use identical data.
-  float accXHistory[3] = {0.0f, 0.0f, 0.0f};
-  float accYHistory[3] = {0.0f, 0.0f, 0.0f};
-  float accZHistory[3] = {0.0f, 0.0f, 0.0f};
-  float gyrXHistory[3] = {0.0f, 0.0f, 0.0f};
-  float gyrYHistory[3] = {0.0f, 0.0f, 0.0f};
-  float gyrZHistory[3] = {0.0f, 0.0f, 0.0f};
-  uint8_t sampleCount;
+  uint32_t sampleCount;
+  uint32_t sampleTimeUs;
   bool initialized;
 };
 

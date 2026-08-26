@@ -20,9 +20,12 @@ constexpr float kMaxPredictDt = 0.050f;
 // A valid pressure observation may refine velocity through the covariance,
 // but it must not create a discontinuity in the flight state.  These limits
 // are per barometer frame (nominally 32 Hz), not limits on IMU propagation.
-constexpr float kMaxAltitudeCorrectionM = 8.0f;
-constexpr float kMaxVelocityCorrectionMps = 4.0f;
-constexpr float kMaxBiasCorrectionMps2 = 0.05f;
+constexpr float kMaxAltitudeCorrectionM = 25.0f;
+constexpr float kMaxVelocityCorrectionMps = 8.0f;
+// Bias is calibrated while stationary. Altitude alone cannot independently
+// observe both velocity and accelerometer bias during a short rocket flight;
+// allowing pressure innovations to learn bias caused the runaway solutions.
+constexpr float kMaxBiasCorrectionMps2 = 0.0f;
 
 static float limitMagnitude(float value, float limit) {
   if (value > limit) return limit;
@@ -56,12 +59,12 @@ void Kalman::reset() {
   P[1][2] = 0.0f;
   P[2][0] = 0.0f;
   P[2][1] = 0.0f;
-  P[2][2] = 0.25f;  // bias uncertainty
+  P[2][2] = 0.0f;  // fixed to the stationary calibration in flight
 
   // Process noise
   Q_altitude = 0.8f * 0.8f;  // acceleration noise density
   Q_velocity = 0.0f;         // retained for compatibility with state layout
-  Q_bias = 0.005f * 0.005f;  // accelerometer-bias random walk density
+  Q_bias = 0.0f;  // do not infer accelerometer bias from pressure altitude
 
   // DPS368 noise
   R_altitude = kBaroVariance;
@@ -117,6 +120,11 @@ void Kalman::predict(float elapsedSeconds) {
   nextP[1][0] += q * dt2 * stepDt * 0.5f;
   nextP[1][1] += q * dt2;
   nextP[2][2] += Q_bias * stepDt;
+  // Bias is fixed after pad calibration. Keep its covariance decoupled so a
+  // pressure residual cannot masquerade as a bias observation.
+  nextP[0][2] = nextP[2][0] = 0.0f;
+  nextP[1][2] = nextP[2][1] = 0.0f;
+  nextP[2][2] = 0.0f;
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j) P[i][j] = nextP[i][j];
 }
@@ -160,7 +168,9 @@ bool Kalman::update(float altitudeMeasurement) {
 
   altitude += effectiveK[0] * error;
   velocity += effectiveK[1] * error;
-  bias += effectiveK[2] * error;
+  // Bias remains the independently measured stationary calibration.
+
+  if (!isfinite(altitude) || !isfinite(velocity)) return false;
 
   float oldP[3][3];
   for (int i = 0; i < 3; ++i)

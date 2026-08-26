@@ -14,9 +14,12 @@ void BARO::zeroAltitude() {
 bool BARO::update() {
   ++updateCount;
   if (!initialized) return false;
-  // The DPS368 runs in background mode at 64 Hz. Never wait here: a blocking
-  // readiness loop can stall the 1 kHz IMU estimator for 100 ms and starve
-  // the core-0 CAN service loop when called from a shared path.
+  // PRS_RDY remains asserted in continuous mode, so rate-limit reads to one
+  // conversion period. This prevents a tight estimator loop from repeatedly
+  // fusing the same held pressure register as if it were new data.
+  uint32_t nowUs = micros();
+  if (lastPressureReadUs != 0 &&
+      (uint32_t)(nowUs - lastPressureReadUs) < 7500u) return false;
   uint8_t flags = dpsRead8(REG_MEAS_CFG);
   lastStatus = flags;
   if (flags & MEAS_TMP_RDY) rawT = readTempRaw();
@@ -28,8 +31,8 @@ bool BARO::update() {
       pressureToRelAlt_cm(candidatePressurePa, baselinePressure);
 
   // A short/noisy I2C read must not replace the last good sensor value.  The
-  // estimator and logger deliberately use the held value between 64 Hz DPS368
-  // conversions, so a 1 kHz loop never turns normal "not ready yet" status
+  // estimator and logger deliberately use the held value between 128 Hz DPS368
+  // conversions, so a fast loop never turns normal "not ready yet" status
   // into a missing/zero barometer trace.
   if (!isfinite(candidateTempC) || candidateTempC <= -80.0f ||
       candidateTempC >= 100.0f || !isfinite(candidatePressurePa) ||
@@ -43,6 +46,8 @@ bool BARO::update() {
   tempC = candidateTempC;
   pressurePa = candidatePressurePa;
   altitude_cm = candidateAltitudeCm;
+  lastPressureReadUs = nowUs;
+  sampleTimeUs = nowUs;
   ++validSampleCount;
   lastError = "ok";
   return true;
@@ -102,26 +107,24 @@ bool BARO::init() {
 
   readCoefficients();
 
-  // 64 Hz, 64x oversampling for both pressure and temperature. This is the
-  // DPS368 reference driver's high-precision continuous setting: it provides
-  // substantially lower pressure noise than 8x while retaining a 15.6 ms
-  // measurement interval suitable for flight estimation. The 64x scale
-  // factor requires the associated result-shift bit.
-  constexpr uint8_t kHighPrecisionCfg = 0x66;
-  constexpr float kHighPrecisionScale = 1040384.0f;
-  dpsWrite(REG_PRS_CFG, kHighPrecisionCfg);
+  // Maximum 128 Hz pressure rate with 1x oversampling. At this rate the
+  // Kalman filter, rather than the sensor, performs temporal averaging.
+  constexpr uint8_t kPressureCfg = 0x70;
+  constexpr uint8_t kTemperatureCfg = 0x00;  // 1 Hz, 1x
+  constexpr float kSingleSampleScale = 524288.0f;
+  dpsWrite(REG_PRS_CFG, kPressureCfg);
   // The compensation coefficients are valid only for the sensor selected by
   // TMP_COEF_SRCE.  Preserve that read-only source bit instead of assuming
   // every DPS368 board uses the external/MEMS temperature sensor.
   uint8_t tempSource = dpsRead8(REG_COEF_SRCE) & 0x80;
-  dpsWrite(REG_TMP_CFG, tempSource | kHighPrecisionCfg);  // 64 Hz, 64x
-  kP = kHighPrecisionScale;
-  kT = kHighPrecisionScale;
+  dpsWrite(REG_TMP_CFG, tempSource | kTemperatureCfg);
+  kP = kSingleSampleScale;
+  kT = kSingleSampleScale;
 
-  // Result shifts are required above 8x. Explicitly set both so the raw
-  // values agree with the 64x compensation scale factors above.
+  // Result shifting is only valid above 8x oversampling; explicitly disable
+  // it for the raw 1x configuration.
   uint8_t cfg = dpsRead8(REG_CFG_REG);
-  cfg |= (1 << 2) | (1 << 3);
+  cfg &= ~((1 << 2) | (1 << 3));
   dpsWrite(REG_CFG_REG, cfg);
 
   // Read the configuration back.  A failed I2C write must not silently leave
@@ -129,9 +132,9 @@ bool BARO::init() {
   uint8_t appliedPrsCfg = dpsRead8(REG_PRS_CFG);
   uint8_t appliedTmpCfg = dpsRead8(REG_TMP_CFG);
   uint8_t appliedCfg = dpsRead8(REG_CFG_REG);
-  if (appliedPrsCfg != kHighPrecisionCfg ||
-      appliedTmpCfg != (uint8_t)(tempSource | kHighPrecisionCfg) ||
-      (appliedCfg & ((1 << 2) | (1 << 3))) != ((1 << 2) | (1 << 3))) {
+  if (appliedPrsCfg != kPressureCfg ||
+      appliedTmpCfg != (uint8_t)(tempSource | kTemperatureCfg) ||
+      (appliedCfg & ((1 << 2) | (1 << 3))) != 0) {
     lastError = "DPS368 configuration readback mismatch";
     return false;
   }
@@ -142,7 +145,7 @@ bool BARO::init() {
   // Average a complete second of pressure conversions for the launch
   // reference. A single conversion makes every later relative altitude carry
   // its quantization/noise error as a fixed offset.
-  constexpr uint8_t kBaselineSamples = 64;
+  constexpr uint8_t kBaselineSamples = 128;
   float pressureSum = 0.0f;
   for (uint8_t i = 0; i < kBaselineSamples; ++i) {
     if (!waitForFlags(MEAS_PRS_RDY, 100)) {
@@ -165,7 +168,7 @@ bool BARO::init() {
     // MEAS_*_RDY remains asserted between background conversions on this
     // device. Waiting one ODR period prevents averaging the same register
     // value 64 times.
-    if (i + 1 < kBaselineSamples) delay(16);
+    if (i + 1 < kBaselineSamples) delay(8);
   }
   baselinePressure = pressureSum / kBaselineSamples;
   if (!isfinite(baselinePressure) || baselinePressure <= 1000.0f) {
