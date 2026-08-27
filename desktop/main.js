@@ -107,7 +107,37 @@ function runPio(args) {
     // The old app deliberately used Python's module invocation: `pio` is not
     // on PATH on this machine even though PlatformIO itself is installed.
     const child = spawn('py', ['-3', '-m', 'platformio', ...args], { cwd: ROOT, shell: false });
-    child.stdout.on('data', x => emit('pio-log', x.toString()));
+    let lastOutput = '';
+    let buildStep = 0;
+    const buildSteps = ['Compiling', 'Linking', 'Verifying'];
+
+    child.stdout.on('data', x => {
+      const text = x.toString();
+      emit('pio-log', text);
+      lastOutput += text;
+
+      // Parse build progress milestones
+      if (/Building in .+ mode|Compiling/.test(text) && buildStep < 1) {
+        buildStep = 1;
+        emit('pio-log', '[Step 1/3] Compiling sources...');
+      } else if (/Linking executable|Building ELF/.test(text) && buildStep < 2) {
+        buildStep = 2;
+        emit('pio-log', '[Step 2/3] Linking...');
+      } else if (/Checking program size|Verifying|Creating binary/.test(text) && buildStep < 3) {
+        buildStep = 3;
+        emit('pio-log', '[Step 3/3] Verifying...');
+      }
+
+      // Parse flash progress for upload
+      if (/Writing at/.test(text)) {
+        const match = text.match(/Writing at 0x[0-9a-f]+ \.\.\. \((\d+)%\)/);
+        if (match) {
+          const percent = parseInt(match[1]);
+          emit('pio-log', `[Flash Progress] ${percent}%`);
+        }
+      }
+    });
+
     child.stderr.on('data', x => emit('pio-log', x.toString()));
     child.on('error', e => reject(new Error(`Could not start PlatformIO. Install it with \`py -3 -m pip install platformio\`. Details: ${e.message}`)));
     child.on('close', code => code === 0 ? resolve('PlatformIO completed successfully.') : reject(new Error(`PlatformIO exited with code ${code}.`)));
@@ -139,7 +169,7 @@ async function saveFlight(number, records, payload) {
 function decodeRecords(buffer) { if (buffer.length % 76) throw new Error('Corrupt flight payload: length is not a multiple of 76 bytes.'); const rows=[]; for(let o=0;o<buffer.length;o+=76) { let r={time_ms:buffer.readUInt32LE(o)}; for(let i=1;i<FIELDS.length;i++) r[FIELDS[i]]=i < 17 ? buffer.readFloatLE(o+4+(i-1)*4) : buffer.readUInt32LE(o+4+(i-1)*4); r.state_name=STATES[r.state] || `UNKNOWN(${r.state})`; rows.push(r); } return rows; }
 async function download(number) {
   if (!port?.isOpen) throw new Error('Connect to the flight computer first.');
-  const payload=await new Promise((resolve,reject)=>{let buffer=Buffer.alloc(0),expected=null,timer;const clean=()=>{clearTimeout(timer);port.off('data',on)};const done=(e,v)=>{clean();e?reject(e):resolve(v)};const on=chunk=>{buffer=Buffer.concat([buffer,Buffer.from(chunk)]);if(expected===null){const end=buffer.indexOf(10);if(end<0)return;const header=buffer.subarray(0,end).toString('utf8').trim();emit('serial-line',header);if(header.startsWith('FLASH:ERROR'))return done(new Error(header));if(!header.startsWith('FLASH:DATA_START:'))return done(new Error(`Unexpected GET response: ${header}`));expected=Number(header.split(':').pop());buffer=buffer.subarray(end+1)}if(buffer.length>=expected){const data=buffer.subarray(0,expected);return done(null,data)}emit('download-progress',{received:buffer.length,expected})};port.on('data',on);timer=setTimeout(()=>done(new Error('Flight transfer timed out.')),20000);port.flush(()=>port.write(`GET ${number}\n`,e=>e&&done(e)))});
+  const payload=await new Promise((resolve,reject)=>{let buffer=Buffer.alloc(0),expected=null,timer;const clean=()=>{clearTimeout(timer);port.off('data',on)};const done=(e,v)=>{clean();e?reject(e):resolve(v)};const on=chunk=>{buffer=Buffer.concat([buffer,Buffer.from(chunk)]);if(expected===null){const end=buffer.indexOf(10);if(end<0)return;const header=buffer.subarray(0,end).toString('utf8').trim();emit('serial-line',header);if(header.startsWith('FLASH:ERROR'))return done(new Error(header));if(!header.startsWith('FLASH:DATA_START:'))return done(new Error(`Unexpected GET response: ${header}`));expected=Number(header.split(':').pop());emit('pio-log',`[Download] Starting transfer: ${expected} bytes`);buffer=buffer.subarray(end+1)}if(buffer.length>=expected){const data=buffer.subarray(0,expected);emit('pio-log',`[Download] Transfer complete: ${expected} bytes`);return done(null,data)}const progress=Math.round((buffer.length/expected)*100);if(progress%25===0)emit('pio-log',`[Download] ${progress}% (${buffer.length}/${expected} bytes)`);emit('download-progress',{received:buffer.length,expected})};port.on('data',on);timer=setTimeout(()=>done(new Error('Flight transfer timed out.')),20000);port.flush(()=>port.write(`GET ${number}\n`,e=>e&&done(e)))});
   const records=decodeRecords(payload); return {...await saveFlight(number,records,payload),records:records.length,bytes:payload.length};
 }
 
