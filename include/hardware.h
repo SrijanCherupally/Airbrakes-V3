@@ -57,7 +57,6 @@ bool hardwarePreflightPassed();
 
 // ODrive helpers
 void EnableOdrv();
-bool odriveEnableAllowed();
 void odrvPosition(float pos);
 void serviceOdrive();
 bool odriveHeartbeatFresh();

@@ -52,7 +52,7 @@ Simulation-generated artifacts should be regenerated through their documented to
 
 The Analytics view can list recorded data, download supported records from the connected device, and inspect locally saved logs.
 
-Downloaded data is organized under the repository's `flight_data` directory. A typical layout is:
+Downloaded data is organized under the application's local data directory. A typical layout is:
 
 ```text
 flight_data/
@@ -60,7 +60,7 @@ flight_data/
   ground_tests/ground_test_0001/data.csv
 ```
 
-The data directory is part of the repository and can be reviewed, committed, and shared with the project. [`DATA.md`](DATA.md) documents the repository's data workflow.
+The exact location is platform-dependent; [`DATA.md`](DATA.md) documents the repository's data workflow.
 
 Use the Analytics view to inspect available telemetry and compare recorded runs. Keep original data copies until you have verified that the downloaded files are complete.
 

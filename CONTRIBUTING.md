@@ -4,10 +4,11 @@ Thanks for contributing. This repository contains embedded firmware, desktop sof
 
 ## Before you start
 
-1. Read the top-level [`README.md`](README.md) to understand the repository layout.
-2. Check [`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md) for desktop-application workflows.
+1. Read the top-level [`README.md`](README.md) to understand the repository layout and quick-start commands.
+2. Check [`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md) for ground-station installation and usage.
 3. Check [`DATA.md`](DATA.md) before changing logging, serialization, or data-analysis behavior.
-4. Review the existing code and documentation around the component you intend to change.
+4. Review [`sim/README.md`](sim/README.md) if your change involves the coast-table generator or generated lookup data.
+5. Review the existing code and documentation around the component you intend to change.
 
 ## Branches and commits
 

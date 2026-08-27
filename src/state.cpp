@@ -35,59 +35,6 @@ static uint32_t boostDecelerationStartMs = 0;
 static constexpr uint32_t BOOST_TO_CONTROL_CONFIRM_MS = 250;
 static uint32_t launchStartMs = 0;
 
-// State transitions must be corroborated by the independent pressure trend.
-// This prevents an attitude/acceleration integration error from declaring
-// apogee or landing by itself, while still allowing the corrected Kalman state
-// to provide the low-latency trigger.
-static uint32_t descentEvidenceStartMs = 0;
-static uint32_t landingEvidenceStartMs = 0;
-static uint32_t lastBaroSampleCount = 0;
-static uint32_t lastBaroTrendTimeUs = 0;
-static float lastBaroTrendAltitudeM = 0.0f;
-static float baroVerticalSpeedMps = 0.0f;
-static bool baroTrendValid = false;
-static constexpr uint32_t DESCENT_CONFIRM_MS = 250;
-static constexpr uint32_t LANDING_CONFIRM_MS = 2000;
-static constexpr float BARO_DESCENT_SPEED_MPS = -0.5f;
-static constexpr float BARO_LANDED_SPEED_MPS = 1.5f;
-
-static void updateBarometricEvidence() {
-  const uint32_t sampleCount = baro.getSampleCount();
-  if (sampleCount == lastBaroSampleCount || !baro.hasValidSample()) return;
-
-  lastBaroSampleCount = sampleCount;
-  const uint32_t sampleTimeUs = baro.getSampleTimeUs();
-  const float altitudeM = baro.getAltitudeM();
-  if (lastBaroTrendTimeUs != 0) {
-    const float dt = (float)(sampleTimeUs - lastBaroTrendTimeUs) * 1.0e-6f;
-    if (dt >= 0.004f && dt <= 0.25f) {
-      const float instantaneous =
-          (altitudeM - lastBaroTrendAltitudeM) / dt;
-      if (isfinite(instantaneous) && fabsf(instantaneous) < 300.0f) {
-        // 1x oversampling is intentionally noisy. Low-pass only the transition
-        // evidence; every raw conversion still reaches the Kalman filter.
-        baroVerticalSpeedMps = baroTrendValid
-                                   ? 0.85f * baroVerticalSpeedMps +
-                                         0.15f * instantaneous
-                                   : instantaneous;
-        baroTrendValid = true;
-      }
-    }
-  }
-  lastBaroTrendAltitudeM = altitudeM;
-  lastBaroTrendTimeUs = sampleTimeUs;
-}
-
-static void resetFlightEvidence() {
-  descentEvidenceStartMs = 0;
-  landingEvidenceStartMs = 0;
-  lastBaroSampleCount = baro.getSampleCount();
-  lastBaroTrendTimeUs = 0;
-  lastBaroTrendAltitudeM = baro.getAltitudeM();
-  baroVerticalSpeedMps = 0.0f;
-  baroTrendValid = false;
-}
-
 const char* stateName(State state) {
   static const char* const names[] = {"IDLE", "PAD", "BOOST", "CONTROL",
                                       "DESCENT", "LANDED", "GROUND_TEST_ARMED",
@@ -132,7 +79,6 @@ void abortGroundTest() {
   if (currentState == STATE_GROUND_TEST_ARMED ||
       currentState == STATE_GROUND_TEST_RECORDING) {
     odrvPosition(MOTOR_MIN);
-    odrv.setState(ODriveAxisState::AXIS_STATE_IDLE);
     // Stop the producer before flushing/closing its queue. One estimator pass
     // can already be in flight on core 1, so give it one 1 kHz period to
     // observe the state change before the file is closed.
@@ -182,10 +128,6 @@ static void groundTestSweepUpdate() {
     groundTestSweepStopped = true;
     Serial.println("GROUND_TEST:CLOSED_ENDPOINT_REACHED");
   }
-}
-
-bool odriveEnableAllowed() {
-  return currentState != STATE_IDLE && currentState != STATE_LANDED;
 }
 
 // Launch tracking in PAD: arm early and recover pre-roll dv before BOOST.
@@ -238,7 +180,6 @@ static float computePadPrerollDv() {
 
 void stateUpdate() {
   float prog;
-  updateBarometricEvidence();
   switch (currentState) {
     case STATE_IDLE:
       // Estimator update handles it all, just show color
@@ -265,7 +206,6 @@ void stateUpdate() {
             currentState = STATE_BOOST;
             launchStartMs = millis();
             boostDecelerationStartMs = 0;
-            resetFlightEvidence();
             resetPadLaunchTracking();
           }
         }
@@ -312,19 +252,9 @@ void stateUpdate() {
 
       controlUpdate();
 
-      // Require both the fused state and sustained raw pressure trend to show
-      // descent. A drifting inertial velocity can no longer declare apogee by
-      // itself, and a single noisy 1x pressure conversion cannot deploy it.
-      if (estVelocity() < VEL_DESCENT && baroTrendValid &&
-          baroVerticalSpeedMps < BARO_DESCENT_SPEED_MPS) {
-        if (descentEvidenceStartMs == 0) descentEvidenceStartMs = millis();
-        if ((uint32_t)(millis() - descentEvidenceStartMs) >=
-            DESCENT_CONFIRM_MS) {
-          currentState = STATE_DESCENT;
-          landingEvidenceStartMs = 0;
-        }
-      } else {
-        descentEvidenceStartMs = 0;
+      // See if apogee reached
+      if (estVelocity() < VEL_DESCENT) {
+        currentState = STATE_DESCENT;
       }
       break;
 
@@ -333,23 +263,17 @@ void stateUpdate() {
       debugPrintf("STATE: DESCENT\n");
       odrvPosition(MOTOR_MIN);  // Closed
 
-      // Confirm landing for two seconds using altitude, low fused velocity,
-      // and a nearly stationary independent pressure trend. This closes logs
-      // after touchdown without allowing either estimator to terminate flight
-      // alone or a transient pressure-port disturbance to end it prematurely.
-      if (estAltitude() < ALT_LANDED &&
-          fabsf(estVelocity()) < (VEL_LANDED + 2.0f) &&
-          estRawBaro() < ALT_LANDED + 1.0f && baroTrendValid &&
-          fabsf(baroVerticalSpeedMps) < BARO_LANDED_SPEED_MPS) {
-        if (landingEvidenceStartMs == 0) landingEvidenceStartMs = millis();
-        if ((uint32_t)(millis() - landingEvidenceStartMs) >=
-            LANDING_CONFIRM_MS) {
-          currentState = STATE_LANDED;
-          delay(3);
-          finalizeFlightLog();
-        }
-      } else {
-        landingEvidenceStartMs = 0;
+      // Do not let an inertial-only altitude error end a flight. Flight 2
+      // reached this branch with a false -50 m/s velocity while the raw
+      // pressure altitude still showed the rocket tens of metres aloft.
+      // The pressure reference is independent of attitude and must agree
+      // before closing the log.
+      if (estAltitude() < ALT_LANDED && estRawBaro() < ALT_LANDED + 1.0f) {
+        currentState = STATE_LANDED;
+        // A landed flight is complete. Leaving the file open makes CURRENT
+        // and DELETE treat it as an active log indefinitely.
+        delay(3);
+        finalizeFlightLog();
       }
       break;
 

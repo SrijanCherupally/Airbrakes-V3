@@ -49,8 +49,6 @@ class BARO {
   float getAltitudeCm() const { return altitude_cm - altitude_offset_cm; }
   float getAltitudeM() const { return getAltitudeCm() / 100.0f; }
   float getBaselinePressure() const { return baselinePressure; }
-  uint32_t getSampleTimeUs() const { return sampleTimeUs; }
-  uint32_t getSampleCount() const { return validSampleCount; }
 
  private:
   // Calibration coefficients
@@ -58,9 +56,10 @@ class BARO {
   int32_t c00, c10;
   int16_t c01, c11, c20, c21, c30;
 
-  // Compensation scale factors for 1x pressure and temperature oversampling.
-  float kT = 524288.0f;
-  float kP = 524288.0f;
+  // DPS368 compensation scale factors for the configured 64x oversampling.
+  // These must exactly match PRS_CFG/TMP_CFG and the result-shift bits.
+  float kT = 1040384.0f;
+  float kP = 1040384.0f;
 
   float baselinePressure = 0.0f;
 
@@ -72,8 +71,6 @@ class BARO {
   uint32_t updateCount = 0;
   uint32_t validSampleCount = 0;
   uint32_t invalidSampleCount = 0;
-  uint32_t sampleTimeUs = 0;
-  uint32_t lastPressureReadUs = 0;
   uint8_t lastStatus = 0;
   const char *lastError = "not started";
 

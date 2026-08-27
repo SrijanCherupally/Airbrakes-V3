@@ -10,7 +10,7 @@
 #include "state.h"
 #include "control.h"
 
-#define LOOPRATE 1000  // Hz, pad calibration only; flight runs sensor-paced
+#define LOOPRATE 1000  // Hz
 static const float dTest = 1.0f / (float)LOOPRATE;
 
 // Scalar altitude/velocity Kalman filter running at the loop rate.
@@ -108,20 +108,19 @@ float biasUpdate() {
 }
 
 void filterUpdate() {
-  // Propagate only when a fresh IMU conversion was published. This lets the
-  // flight loop run as quickly as SPI permits without integrating duplicates.
-  bool imuFresh = imu.update();
-  uint32_t predictNowUs = imuFresh ? imu.getSampleTimeUs() : gLastPredictUs;
-  float predictDt = (gLastPredictUs == 0 || !imuFresh)
+  unsigned long start = micros();
+
+  // Read IMU and propagate attitude
+  imu.update();
+  uint32_t predictNowUs = micros();
+  float predictDt = (gLastPredictUs == 0)
                         ? dTest
                         : (float)(predictNowUs - gLastPredictUs) * 1.0e-6f;
-  if (imuFresh) gLastPredictUs = predictNowUs;
+  gLastPredictUs = predictNowUs;
   // Descent rotation makes gyro-only tilt drift into a false vertical
   // acceleration. Specific force is near 1 g after deployment, so use it to
   // keep gravity aligned without trusting it during boost or controlled coast.
-  if (imuFresh) {
-    updateOrientation(predictDt, currentState == STATE_DESCENT);
-  }
+  updateOrientation(predictDt, currentState == STATE_DESCENT);
 
   // Keep raw sensor telemetry independent of the Kalman/barometer update.
   // Previously the logger used estAccel(), which is already bias-corrected,
@@ -151,9 +150,7 @@ void filterUpdate() {
   // Kalman prediction from world-frame vertical acceleration.  Do not assume
   // that loop1 has executed exactly every 2 ms: SPI, serial interrupts and
   // scheduler load otherwise scale velocity and altitude by the wrong factor.
-  if (imuFresh) {
-    filter.predict(predictDt);
-  }
+  filter.predict(predictDt);
 
   // Barometer correction when a new sample is available
   if (baro.update()) {
@@ -169,10 +166,8 @@ void filterUpdate() {
       if (gCoastStartMs == 0) gCoastStartMs = nowMs;
       bool coastSettled = (uint32_t)(nowMs - gCoastStartMs) >=
                          BARO_COAST_SETTLE_MS;
-      // Never qualify pressure against the drifting inertial altitude. Flights
-      // 3-5 showed that circular check permanently locked out the only absolute
-      // reference after the inertial state had diverged.
-      if (coastSettled && calmCoast) {
+      bool plausible = filter.isAltitudeMeasurementPlausible(gRawBaro);
+      if (coastSettled && calmCoast && plausible) {
         if (gBaroQualifiedSamples < BARO_QUALIFY_SAMPLES) {
           ++gBaroQualifiedSamples;
         }
@@ -224,8 +219,7 @@ void filterUpdate() {
                   batteryVoltage, axisError);
   }
 
-  // No fixed sleep in flight: fresh IMU and pressure timestamps independently
-  // pace prediction and correction at the fastest rates the sensors deliver.
+  holdLoopRate(start);
 }
 
 void estimatorInjectVelocity(float dv) {

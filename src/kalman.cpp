@@ -20,12 +20,9 @@ constexpr float kMaxPredictDt = 0.050f;
 // A valid pressure observation may refine velocity through the covariance,
 // but it must not create a discontinuity in the flight state.  These limits
 // are per barometer frame (nominally 32 Hz), not limits on IMU propagation.
-constexpr float kMaxAltitudeCorrectionM = 25.0f;
-constexpr float kMaxVelocityCorrectionMps = 8.0f;
-// Bias is calibrated while stationary. Altitude alone cannot independently
-// observe both velocity and accelerometer bias during a short rocket flight;
-// allowing pressure innovations to learn bias caused the runaway solutions.
-constexpr float kMaxBiasCorrectionMps2 = 0.0f;
+constexpr float kMaxAltitudeCorrectionM = 8.0f;
+constexpr float kMaxVelocityCorrectionMps = 4.0f;
+constexpr float kMaxBiasCorrectionMps2 = 0.05f;
 
 static float limitMagnitude(float value, float limit) {
   if (value > limit) return limit;
@@ -59,12 +56,12 @@ void Kalman::reset() {
   P[1][2] = 0.0f;
   P[2][0] = 0.0f;
   P[2][1] = 0.0f;
-  P[2][2] = 0.0f;  // fixed to the stationary calibration in flight
+  P[2][2] = 0.25f;  // bias uncertainty
 
   // Process noise
   Q_altitude = 0.8f * 0.8f;  // acceleration noise density
   Q_velocity = 0.0f;         // retained for compatibility with state layout
-  Q_bias = 0.0f;  // do not infer accelerometer bias from pressure altitude
+  Q_bias = 0.005f * 0.005f;  // accelerometer-bias random walk density
 
   // DPS368 noise
   R_altitude = kBaroVariance;
@@ -120,11 +117,6 @@ void Kalman::predict(float elapsedSeconds) {
   nextP[1][0] += q * dt2 * stepDt * 0.5f;
   nextP[1][1] += q * dt2;
   nextP[2][2] += Q_bias * stepDt;
-  // Bias is fixed after pad calibration. Keep its covariance decoupled so a
-  // pressure residual cannot masquerade as a bias observation.
-  nextP[0][2] = nextP[2][0] = 0.0f;
-  nextP[1][2] = nextP[2][1] = 0.0f;
-  nextP[2][2] = 0.0f;
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j) P[i][j] = nextP[i][j];
 }
@@ -149,22 +141,6 @@ bool Kalman::update(float altitudeMeasurement) {
   float error = altitudeMeasurement - altitude;
   const float S = P[0][0] + R_altitude;
 
-  // Once barometric aiding is enabled, a very large innovation means the
-  // inertial solution has already diverged. Limiting a normal Kalman gain to
-  // 25 m would leave the velocity wrong for seconds and was the mechanism
-  // behind the kilometre-scale flight-log errors. Re-anchor altitude to the
-  // independent pressure measurement and bound the remaining inertial
-  // velocity before resuming normal covariance-based corrections.
-  if (fabsf(error) > 100.0f) {
-    altitude = altitudeMeasurement;
-    if (!isfinite(velocity) || fabsf(velocity) > 100.0f) velocity = 0.0f;
-    P[0][0] = kBaroVariance;
-    P[0][1] = P[1][0] = 0.0f;
-    P[1][1] = fminf(P[1][1], 25.0f);
-    P[0][2] = P[2][0] = P[1][2] = P[2][1] = 0.0f;
-    return true;
-  }
-
   float K[3] = {P[0][0] / S, P[1][0] / S, P[2][0] / S};
   float effectiveK[3] = {K[0], K[1], K[2]};
   float correctionLimits[3] = {kMaxAltitudeCorrectionM,
@@ -184,42 +160,16 @@ bool Kalman::update(float altitudeMeasurement) {
 
   altitude += effectiveK[0] * error;
   velocity += effectiveK[1] * error;
-  // Bias remains the independently measured stationary calibration.
+  bias += effectiveK[2] * error;
 
-  if (!isfinite(altitude) || !isfinite(velocity)) return false;
-
-  // Joseph-form covariance update.  Unlike the compact (I-KH)P form used
-  // by Rock7, this remains symmetric and positive semidefinite in float32,
-  // including when a correction was deliberately limited above.
   float oldP[3][3];
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j) oldP[i][j] = P[i][j];
-
-  float I_KH[3][3] = {{1.0f - effectiveK[0], 0.0f, 0.0f},
-                      {-effectiveK[1], 1.0f, 0.0f},
-                      {-effectiveK[2], 0.0f, 1.0f}};
-  float temp[3][3] = {};
-  float joseph[3][3] = {};
   for (int i = 0; i < 3; ++i)
     for (int j = 0; j < 3; ++j)
-      for (int k = 0; k < 3; ++k) temp[i][j] += I_KH[i][k] * oldP[k][j];
-  for (int i = 0; i < 3; ++i)
-    for (int j = 0; j < 3; ++j)
-      for (int k = 0; k < 3; ++k) joseph[i][j] += temp[i][k] * I_KH[j][k];
-  for (int i = 0; i < 3; ++i)
-    for (int j = 0; j < 3; ++j)
-      joseph[i][j] += effectiveK[i] * S * effectiveK[j];
-
-  for (int i = 0; i < 3; ++i) {
-    for (int j = i + 1; j < 3; ++j) {
-      float symmetric = 0.5f * (joseph[i][j] + joseph[j][i]);
-      joseph[i][j] = symmetric;
-      joseph[j][i] = symmetric;
-    }
-    if (!isfinite(joseph[i][i]) || joseph[i][i] < 0.0f) return false;
-  }
-  for (int i = 0; i < 3; ++i)
-    for (int j = 0; j < 3; ++j) P[i][j] = joseph[i][j];
+      P[i][j] = oldP[i][j] - effectiveK[i] * oldP[0][j] -
+                oldP[i][0] * effectiveK[j] +
+                effectiveK[i] * S * effectiveK[j];
   return true;
 }
 

@@ -1,10 +1,35 @@
 # `lib/`
 
-Project-local libraries belong here, with one library per subdirectory. This
-repository currently vendors `lib/CAN`, a patched MCP2515 CAN library with
-20 MHz crystal support. It is intentionally local; do not add the upstream
-CAN package to `platformio.ini`.
+Project-local libraries live here. Each subdirectory is treated as an independent library that PlatformIO discovers automatically.
 
-PlatformIO discovers libraries in this directory automatically. See the
-[PlatformIO library documentation](https://docs.platformio.org/page/librarymanager/ldf.html)
-for dependency-resolution details.
+## What belongs here
+
+- Third-party libraries that are intentionally vendored because they need project-specific patches.
+- Small helper libraries that do not belong in the public registry and are only used by this project.
+
+## Currently vendored libraries
+
+| Library | Why it is vendored |
+| --- | --- |
+| `lib/CAN` | Patched MCP2515 CAN library with 20 MHz crystal support. The upstream `sandeepmistry/arduino-CAN` does not include the required CNF table for 20 MHz crystals, so this project maintains a local patched copy. Do not replace this with a registry dependency without verifying crystal-frequency support. |
+
+## Adding or updating libraries
+
+1. Copy the library into a new subdirectory, for example `lib/NewLibrary`.
+2. Apply any necessary patches and document them in a `README.md` or comments at the top of patched files.
+3. Ensure `platformio.ini` does **not** include a conflicting `lib_deps` entry for the same library name; PlatformIO prefers the local copy automatically.
+4. Update this README to explain the vendoring rationale.
+
+## Do not assume unpatched upstream
+
+For `lib/CAN`, assume the patched behavior is required for 20 MHz MCP2515 boards. If you need a different crystal frequency, check the MCP2515 CNF configuration in `lib/CAN/src/MCP2515.cpp` before changing the library or adding an alternative dependency.
+
+## PlatformIO details
+
+PlatformIO's Library Dependency Finder (LDF) scans `lib/` automatically. For more details on how dependencies are resolved, see the [PlatformIO LDF documentation](https://docs.platformio.org/page/librarymanager/ldf.html).
+
+## Links
+
+- [`lib/CAN/README.md`](CAN/README.md) — upstream CAN library README (unpatched documentation).
+- [`lib/CAN/API.md`](CAN/API.md) — CAN library API reference.
+- [`../platformio.ini`](../platformio.ini) — where library dependencies are declared.

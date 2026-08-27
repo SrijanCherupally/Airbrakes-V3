@@ -10,7 +10,7 @@ At a high level, recorded data moves through four stages:
 
 1. The firmware records structured telemetry to onboard storage.
 2. The desktop application retrieves supported records through the firmware's serial interface.
-3. Downloaded records are stored as CSV data under the repository's `flight_data/` directory.
+3. Downloaded records are stored locally as CSV data.
 4. Analytics and replay tools read the local data for inspection.
 
 Treat each stage as an interface. Changes to record layout or protocol should be reflected in both implementation and documentation.
@@ -66,7 +66,7 @@ flight_data/
   ground_tests/ground_test_0001/data.csv
 ```
 
-The desktop application stores this directory inside the repository, so downloaded logs are visible to Git and can be committed with the project. Existing logs from the legacy `%USERPROFILE%\\.airbrakes_ground_station\\flight_data` location can be copied into this directory.
+The parent directory is platform-dependent and is managed by the desktop application. Do not assume a fixed absolute path in scripts intended for multiple computers.
 
 ## Data integrity
 

@@ -6,7 +6,6 @@
 #include "MCP2515.h"
 #include "ODriveEnums.h"
 #include "config.h"
-#include "state.h"
 
 // ---------- Global hardware instances ----------
 BARO baro;
@@ -212,7 +211,7 @@ void setupHardware() {
   odrv.clearErrors();
   odrv.setControllerMode(ODriveControlMode::CONTROL_MODE_POSITION_CONTROL,
                          ODriveInputMode::INPUT_MODE_PASSTHROUGH);
-  odrv.setState(ODriveAxisState::AXIS_STATE_IDLE);
+  odrv.setState(ODriveAxisState::AXIS_STATE_CLOSED_LOOP_CONTROL);
 }
 
 void updateBatteryVoltage() {
@@ -315,7 +314,7 @@ void serviceOdrive() {
   bool feedbackFresh = lastFeedbackMs != 0 &&
                        (uint32_t)(nowMs - lastFeedbackMs) <=
                            ODRIVE_FEEDBACK_TIMEOUT_MS;
-  if (odriveEnableAllowed() && odriveHeartbeatFresh() &&
+  if (odriveHeartbeatFresh() &&
       (!feedbackFresh || lastHeartbeat.Axis_State !=
                               ODriveAxisState::AXIS_STATE_CLOSED_LOOP_CONTROL) &&
       (uint32_t)(nowMs - lastEnableRequestMs) >= ODRIVE_ENABLE_RETRY_MS) {
