@@ -19,3 +19,4 @@ build/
 dist/
 out/
 coverage/
+# Flight logs are intentionally versioned in this repository.

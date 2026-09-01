@@ -60,7 +60,7 @@ flight_data/
   ground_tests/ground_test_0001/data.csv
 ```
 
-The exact location is platform-dependent; [`DATA.md`](DATA.md) documents the repository's data workflow.
+The folder is the repository-root `flight_data/` directory. Downloaded flights and ground tests are kept there so they can be versioned with the project.
 
 Use the Analytics view to inspect available telemetry and compare recorded runs. Keep original data copies until you have verified that the downloaded files are complete.
 

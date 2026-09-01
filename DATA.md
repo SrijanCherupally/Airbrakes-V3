@@ -66,7 +66,7 @@ flight_data/
   ground_tests/ground_test_0001/data.csv
 ```
 
-The parent directory is platform-dependent and is managed by the desktop application. Do not assume a fixed absolute path in scripts intended for multiple computers.
+The `flight_data/` directory is stored at the repository root and is intentionally versioned with the project. The desktop application writes there on every launch/download.
 
 ## Data integrity
 

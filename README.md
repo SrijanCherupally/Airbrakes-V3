@@ -17,7 +17,7 @@ The repository is organized so that firmware, desktop software, simulation, and 
 | `tools/` | Standalone development and diagnostic utilities |
 | `lib/` | Project-local libraries |
 | `test/` | PlatformIO tests |
-| `flight_data/` | Local flight-data files when present |
+| `flight_data/` | Versioned flight-data files |
 
 The firmware targets an RP2350/Pico 2-class controller and integrates inertial sensing, barometric sensing, motor-control communication, onboard logging, and estimation/control software. The desktop application provides a unified interface for development, diagnostics, configuration, data download, analytics, and replay.
 
