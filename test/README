@@ -1,32 +1,11 @@
 # `test/`
 
-PlatformIO unit and integration tests live here. Tests help catch regressions and document expected behavior, especially for estimation, control, and utility code that does not depend directly on physical hardware.
-
-## Running tests
-
-From the repository root:
+PlatformIO tests belong here. Keep hardware-independent unit tests in this
+directory and run them with:
 
 ```bash
-pio test -e AirbrakesV3
+pio test
 ```
 
-PlatformIO will compile the test sources, run them on the selected environment, and report results. For more options, see the [PlatformIO unit-testing guide](https://docs.platformio.org/en/latest/advanced/unit-testing/index.html).
-
-## Test assumptions
-
-- **Host-only tests:** Tests that run on the development machine should not assume real hardware is present. Use mocks or stubs for hardware-specific interfaces where needed.
-- **Hardware-dependent tests:** If a test needs a specific sensor, board, or external device, document that requirement clearly at the top of the test file and consider guarding it with PlatformIO test filters or conditional logic.
-
-## When no executable tests apply
-
-For documentation-only changes, configuration updates that are validated by inspection, or workflow changes that are verified manually, state clearly in a pull request that no executable tests cover the change and describe how the change was validated instead.
-
-## Layout
-
-Each test file should live under `test/` with a descriptive name and the appropriate PlatformIO test structure. Keep tests focused and readable so they serve as both verification and documentation of expected behavior.
-
-## Links
-
-- [`../platformio.ini`](../platformio.ini) — build and test environment configuration.
-- [`../include/README`](../include/README) — shared header conventions.
-- [PlatformIO unit-testing documentation](https://docs.platformio.org/en/latest/advanced/unit-testing/index.html)
+See the [PlatformIO unit-testing guide](https://docs.platformio.org/en/latest/advanced/unit-testing/index.html)
+for test layout and runner options.

@@ -6,7 +6,7 @@
 #include "hardware.h"
 #include "vector.h"
 
-#define loopTime 1000  // Hz
+#define loopTime 500  // Hz
 const float dT = 1.0f / (float)loopTime;
 static constexpr float GRAVITY_CORRECTION_MAX_ERROR = 3.5f;
 static constexpr float GRAVITY_CORRECTION_BANDWIDTH_HZ = 3.0f;

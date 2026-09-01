@@ -1,177 +1,116 @@
 # Airbrakes V3
 
-Airbrakes V3 is an experimental active-airbrakes platform. This repository contains the embedded firmware, Electron ground station, simulation helpers, CAN support, and recorded-data tools used to develop and test it.
+Airbrakes V3 is a research and development project containing embedded firmware, a desktop ground-station application, simulation utilities, and flight-data tooling for an active-airbrakes test platform.
 
-> **Safety first:** This is research and development software for hardware that can move and deploy actuators. Follow your team's test plans, launch rules, adult-supervision requirements, and electrical/mechanical safety procedures. This README is not a substitute for those procedures.
+The repository is organized so that firmware, desktop software, simulation, and recorded data can be developed and analyzed independently.
 
-## Choose your starting point
+> **Project note:** This repository is experimental engineering software. Hardware testing should be performed only under the applicable team, competition, and adult-supervision requirements.
 
-| If you want to… | Start here | First command |
-| --- | --- | --- |
-| Build firmware | [Firmware](#firmware) | `pio run -e AirbrakesV3` |
-| Open the ground station | [Ground station](#ground-station) | `npm install` then `npm start` |
-| Run PlatformIO tests | [`test/README`](test/README) | `pio test -e AirbrakesV3` |
-| Regenerate the coast lookup table | [`sim/README.md`](sim/README.md) | `python sim/generate_coast_table.py` |
-| Understand recorded logs | [`DATA.md`](DATA.md) | — |
-| Contribute a change | [`CONTRIBUTING.md`](CONTRIBUTING.md) | — |
+## What is in the repository?
 
-## Prerequisites
+| Area | Purpose |
+| --- | --- |
+| `src/` | Embedded firmware implementation |
+| `include/` | Shared firmware interfaces and configuration |
+| `desktop/` | Electron-based ground-station UI |
+| `sim/` | Simulation and generated analysis artifacts |
+| `tools/` | Standalone development and diagnostic utilities |
+| `lib/` | Project-local libraries |
+| `test/` | PlatformIO tests |
+| `flight_data/` | Local flight-data files when present |
 
-Install only the tools needed for the work you plan to do:
+The firmware targets an RP2350/Pico 2-class controller and integrates inertial sensing, barometric sensing, motor-control communication, onboard logging, and estimation/control software. The desktop application provides a unified interface for development, diagnostics, configuration, data download, analytics, and replay.
 
-- **Firmware:** [PlatformIO](https://platformio.org/) through VS Code or the [PlatformIO CLI](https://docs.platformio.org/en/latest/core/installation/index.html).
-- **Ground station:** Node.js and npm. The app currently uses Electron 35, SerialPort, Papa Parse, and Plotly; `npm install` installs the project dependencies.
-- **Simulation:** Python 3 and NumPy. Install NumPy with `python -m pip install numpy` if it is not already available.
-- **Hardware work:** the appropriate board, sensors, motor-control hardware, cables, and your team's approved test setup. Hardware procedures are maintained separately from this software guide.
+## Start here
 
-## Quick start
+### Firmware development
 
-Clone the repository, then open a terminal in the repository root. The commands below are independent; run the ones for your task.
-
-### Firmware
-
-Build the RP2350/Pico 2 target:
+Install [PlatformIO](https://platformio.org/) through VS Code or the standalone CLI, then run:
 
 ```bash
-pio run -e AirbrakesV3
+pio run
 ```
 
-The board, framework, upload settings, serial speed, and dependencies are defined in [`platformio.ini`](platformio.ini). Connect hardware and upload firmware only after reviewing the applicable test procedure.
+For board-specific programming and hardware-test procedures, follow the procedures maintained by your team rather than treating this README as a substitute for the project's hardware documentation.
 
-### Ground station
+### Ground-station development
 
-Install JavaScript dependencies and start the Electron app:
+From the repository root:
 
 ```bash
 npm install
 npm start
 ```
 
-Convenience launchers are also provided:
-
-- Windows: double-click [`app.bat`](app.bat).
-- macOS/Linux: run `bash app.command` from a terminal. On macOS, make it executable once with `chmod +x app.command`.
-
-For connection, configuration, analytics, and 3D replay instructions, see [`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md).
-
-### Tests
-
-Run the PlatformIO test command for this environment:
-
-```bash
-pio test -e AirbrakesV3
-```
-
-Read [`test/README`](test/README) before adding tests, especially if a test needs physical hardware.
+The desktop application is built with Electron. Its main responsibilities are separated between the main process, preload bridge, renderer, analytics dashboard, and replay view.
 
 ### Simulation and analysis
 
-The coast-table generator uses NumPy and writes generated lookup data for both Python and C++ consumers:
+Simulation utilities live under `sim/`. Check the scripts in that directory for their current command-line interfaces. Generated artifacts should be treated as derived files rather than hand-edited source.
 
-```bash
-python sim/generate_coast_table.py
-```
+## Firmware architecture
 
-The script also updates mass and air-density constants in `include/config.h`. Review its output before building firmware. See [`sim/README.md`](sim/README.md) for inputs, generated files, and reproducibility notes.
+The firmware is divided into several logical layers:
 
-Recorded data can be explored in the ground station or inspected with the workflows described in [`DATA.md`](DATA.md).
+- **Hardware interfaces** — sensor, CAN, storage, and board-level interfaces.
+- **Estimation** — sensor sampling, attitude estimation, and state estimation.
+- **Flight state** — high-level state tracking and transitions.
+- **Control** — model-based calculations and actuator commands.
+- **Logging** — structured records written to onboard storage.
+- **Configuration** — project constants and tunable parameters.
 
-## Repository layout
+The implementation is primarily under `src/`, with public/shared interfaces under `include/`.
 
-| Directory or file | What it contains |
+Useful starting points include:
+
+| Component | Location |
 | --- | --- |
-| `src/` | Firmware implementations, including sensors, estimation, control, state, CAN, and logging. |
-| `include/` | Shared firmware headers, configuration, and generated C++ lookup data. See [`include/README`](include/README). |
-| `platformio.ini` | The PlatformIO environment and firmware dependencies. |
-| `desktop/` | Electron main process, preload bridge, renderer, analytics, and 3D replay code. |
-| `sim/` | Simulation scripts and generated coast-table data. See [`sim/README.md`](sim/README.md). |
-| `tools/` | Standalone development aids that are not automatically built as firmware. See [`tools/README.md`](tools/README.md). |
-| `lib/` | Project-local libraries, including the patched CAN library. See [`lib/README`](lib/README). |
-| `test/` | PlatformIO test sources and test notes. See [`test/README`](test/README). |
-| `flight_data/` | Recorded flight and ground-test data when present. See [`DATA.md`](DATA.md). |
-| `APP_INSTRUCTIONS.md` | Ground-station installation and user workflows. |
-| `DATA.md` | Storage format, serial commands, downloads, and data validation. |
-| `CONTRIBUTING.md` | Branch, code, documentation, and pull-request guidance. |
-
-### Source, generated files, and recorded data
-
-- Treat files in `src/`, `include/`, `desktop/`, `sim/`, and `tools/` as source unless a file says it is generated.
-- Do not hand-edit `sim/coast_table.py` or `include/coast_table.h`; regenerate them with `sim/generate_coast_table.py`.
-- The generator updates selected values in `include/config.h`; review that change as part of the same update.
-- `flight_data/` contains recorded datasets, not firmware source. Keep original copies while checking downloads and avoid committing personal or unnecessary data.
-- `lib/` contains a project-local CAN implementation because the project needs MCP2515 20 MHz crystal support. Do not replace it with a registry dependency without checking the compatibility implications.
-
-## Firmware overview
-
-Firmware responsibilities are divided into focused layers:
-
-- **Hardware:** board pins, sensors, storage, and motor-control interfaces.
-- **Estimation:** inertial/barometric processing, orientation, and state estimation.
-- **Flight state:** high-level state definitions and transitions.
-- **Control:** model-based calculations and actuator commands.
-- **Logging:** structured records written to onboard storage.
-- **Configuration:** tunable constants and hardware-specific settings.
-
-Useful entry points include:
-
-| Concern | Start with |
-| --- | --- |
-| Program entry point | `src/main.cpp` |
+| State definitions | `include/state.h` |
 | Configuration | `include/config.h` |
-| Hardware interfaces | `include/hardware.h`, `src/hardware.cpp` |
-| Flight states | `include/state.h`, `src/state.cpp` |
-| Estimation | `include/estimator.h`, `src/estimator.cpp`, `src/kalman.cpp` |
-| Control | `include/control.h`, `src/control.cpp` |
+| Hardware interfaces | `include/hardware.h` / `src/hardware.cpp` |
+| Estimation | `src/estimator.cpp`, `src/kalman.cpp`, `src/orientation.cpp` |
+| Control | `src/control.cpp` |
 | Logging | `include/flash.h`, `src/flash.cpp` |
 
-## Ground-station overview
+## Ground station architecture
 
-The desktop app is split into focused components:
+The desktop application is split into focused components:
 
-- `desktop/main.js` — Electron main process and local-system integration.
-- `desktop/preload.js` — controlled main-process/renderer API bridge.
-- `desktop/renderer.html` — application shell.
-- `desktop/renderer.js` — renderer-side behavior.
-- `desktop/analytics.js` — data browsing and charts.
-- `desktop/flight3d.js` — recorded-telemetry replay.
+- `desktop/renderer.html` — application UI shell.
+- `desktop/main.js` — Electron main-process integration and local-system bridge.
+- `desktop/preload.js` — controlled renderer/main-process API bridge.
+- `desktop/renderer.js` — renderer-side application behavior.
+- `desktop/analytics.js` — flight-data analytics and charts.
+- `desktop/flight3d.js` — interactive replay visualization.
 
-The app can connect to the board, show diagnostics, change supported configuration values, download records, chart logs, and replay CSV data. See [`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md) before using a hardware-connected workflow.
+Keeping these responsibilities separated makes it easier to change the UI without coupling it directly to firmware implementation details.
 
-## Troubleshooting first steps
+## Data and logs
 
-### `pio` is not recognized
+Flight-data formats, storage layout, serial interfaces, and analysis workflows are documented separately in [`DATA.md`](DATA.md). GUI-specific information is in [`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md).
 
-Install PlatformIO, restart the terminal or VS Code, and confirm the PlatformIO executable is on your `PATH`. The ground station can still be developed without PlatformIO, but firmware build and upload integration require it.
-
-### The Electron app will not start
-
-Run `npm install` from the repository root, then run `npm start` again. Read the first error in the terminal output; later errors may only be follow-on failures.
-
-### No serial port appears
-
-Reconnect the board, close other serial-monitor applications, and refresh the available ports. Do not use a hardware-connected operation until the selected port is confirmed to be the intended board.
-
-### A generated file looks out of date
-
-Regenerate it from the source script instead of editing the generated file directly:
-
-```bash
-python sim/generate_coast_table.py
-```
-
-Review the resulting diff, including any changes to `include/config.h`.
+When changing a data record or serialized format, update the corresponding reader/writer code and documentation together. Prefer backward-compatible changes where practical.
 
 ## Documentation map
 
-- [`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md) — install and use the ground station.
-- [`DATA.md`](DATA.md) — recorded-data formats, storage, serial transfers, and validation.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to make and validate changes.
-- [`include/README`](include/README) — shared firmware header conventions.
-- [`lib/README`](lib/README) — project-local library conventions.
-- [`sim/README.md`](sim/README.md) — simulation and coast-table generation.
-- [`test/README`](test/README) — PlatformIO test guidance.
-- [`tools/README.md`](tools/README.md) — standalone development utilities.
+- [`APP_INSTRUCTIONS.md`](APP_INSTRUCTIONS.md) — ground-station installation and software usage.
+- [`DATA.md`](DATA.md) — data formats, storage, downloads, and analysis.
+- [`include/README`](include/README) — conventions for shared firmware headers.
+- [`test/README`](test/README) — test-directory notes.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — development and pull-request guidelines.
+
+## Repository conventions
+
+- Keep generated artifacts separate from hand-maintained source.
+- Keep hardware-specific constants in the configuration/interface layer rather than scattering them through implementation files.
+- Update documentation when changing public interfaces, file formats, or developer workflows.
+- Prefer small, focused commits and pull requests so changes are easy to review.
+- Do not commit secrets, personal credentials, or unnecessary generated build output.
+
+## Pull requests
+
+Changes should normally be developed on a topic branch and proposed through a pull request against `main`. Describe the motivation, summarize the files changed, and note any tests or validation performed. GitHub's pull-request workflow is designed to keep proposed changes isolated and reviewable before they are merged.
 
 ## License
 
-See [`LICENSE`](LICENSE) for the project's license terms.
+See [`LICENSE`](LICENSE) for the repository's license terms.

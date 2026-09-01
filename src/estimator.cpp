@@ -10,7 +10,7 @@
 #include "state.h"
 #include "control.h"
 
-#define LOOPRATE 1000  // Hz
+#define LOOPRATE 500  // Hz
 static const float dTest = 1.0f / (float)LOOPRATE;
 
 // Scalar altitude/velocity Kalman filter running at the loop rate.
@@ -31,7 +31,7 @@ bool biasActive = true;
 // Stationary detection tolerances for pad bias calibration.
 static constexpr float BIAS_STATIONARY_ACCEL_TOL = 0.6f;  // m/s^2 around 1g
 static constexpr float BIAS_STATIONARY_GYRO_MAX = 0.35f;  // rad/s
-static const float alpha_cd = 0.025f;  // Cd low-pass, ~4 Hz @ 1 kHz
+static const float alpha_cd = 0.05f;  // Cd low-pass, ~4 Hz @ 500 Hz
 
 // Barometer pressure is not a static-pressure measurement while the vehicle
 // is under thrust or moving quickly.  Re-enable it only after coast has had
@@ -41,6 +41,7 @@ static const float alpha_cd = 0.025f;  // Cd low-pass, ~4 Hz @ 1 kHz
 // a single early-coast pressure reading from producing a state jump.
 static constexpr uint32_t BARO_COAST_SETTLE_MS = 600;
 static constexpr float BARO_COAST_MAX_ACCEL = 4.0f * G;
+static constexpr float BARO_COAST_MAX_VELOCITY = 50.0f;
 static constexpr uint8_t BARO_QUALIFY_SAMPLES = 5;
 
 static void holdLoopRate(unsigned long startUs) {
@@ -141,7 +142,7 @@ void filterUpdate() {
 
   // Capture every estimator sample for flight and ground-test analysis. The
   // logger only copies into a RAM queue here; core 0 writes the queue to flash.
-  // Flash is deliberately sampled at 100 Hz. Logging every 1 kHz estimator
+  // Flash is deliberately sampled at 100 Hz.  Logging every 500 Hz estimator
   // iteration made the producer faster than LittleFS/CAN servicing and caused
   // queue overflow, which looked like a test that started seconds late.
   static uint32_t lastLogMs = 0;
@@ -155,12 +156,15 @@ void filterUpdate() {
   // Barometer correction when a new sample is available
   if (baro.update()) {
     gRawBaro = baro.getAltitudeM();
-    // Do not use the estimated velocity to decide whether pressure may aid:
-    // once inertial velocity drifts, that circular gate prevents the only
-    // independent altitude sensor from ever correcting it. Continuous boost
-    // pressure data remains logged but cannot change the state.
+    // Use the Rock7-style motion gate, augmented with explicit coast timing
+    // and qualification.  Continuous boost pressure data remains logged, but
+    // cannot change altitude or velocity.  A barometer can be accurate at
+    // apogee, so it is deliberately reintroduced once coast is slow and has
+    // settled rather than being deferred until descent.
     float accel = filter.getCorrectedAcceleration();
-    bool calmCoast = fabsf(accel) < BARO_COAST_MAX_ACCEL;
+    float vel = filter.getVelocity();
+    bool calmCoast = fabsf(accel) < BARO_COAST_MAX_ACCEL &&
+                     fabsf(vel) < BARO_COAST_MAX_VELOCITY;
 
     if (currentState == STATE_CONTROL) {
       if (gCoastStartMs == 0) gCoastStartMs = nowMs;
@@ -187,7 +191,8 @@ void filterUpdate() {
 
     bool baroAidingAllowed =
         (currentState == STATE_CONTROL && gBaroQualified && calmCoast) ||
-        (currentState == STATE_DESCENT && fabsf(accel) < (4.0f * G)) ||
+        (currentState == STATE_DESCENT && fabsf(accel) < (4.0f * G) &&
+         fabsf(vel) < 80.0f) ||
         currentState == STATE_GROUND_TEST_RECORDING;
     if (baroAidingAllowed) {
       filter.update(gRawBaro);

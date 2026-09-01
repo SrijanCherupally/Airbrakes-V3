@@ -56,12 +56,14 @@ class BARO {
   int32_t c00, c10;
   int16_t c01, c11, c20, c21, c30;
 
-  // DPS368 compensation scale factors for the configured 64x oversampling.
+  // DPS368 compensation scale factors for the configured 8x oversampling.
   // These must exactly match PRS_CFG/TMP_CFG and the result-shift bits.
-  float kT = 1040384.0f;
-  float kP = 1040384.0f;
+  float kT = 7864320.0f;
+  float kP = 7864320.0f;
 
   float baselinePressure = 0.0f;
+  const float R = 287.05f;
+  const float g = 9.80665f;
 
   int32_t rawT = 0, rawP = 0;
   float tempC = 0.0f, pressurePa = 0.0f, altitude_cm = 0.0f;
@@ -88,7 +90,7 @@ class BARO {
   void readCoefficients();
   float calcTemperatureC(int32_t rawT);
   float calcPressurePa(int32_t rawP, int32_t rawT);
-  float pressureToRelAlt_cm(float P, float P0);
+  float pressureToRelAlt_cm(float P, float P0, float T_K);
   bool waitForFlags(uint8_t mask, uint32_t timeout_ms);
 };
 

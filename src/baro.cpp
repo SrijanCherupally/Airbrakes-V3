@@ -14,8 +14,8 @@ void BARO::zeroAltitude() {
 bool BARO::update() {
   ++updateCount;
   if (!initialized) return false;
-  // The DPS368 runs in background mode at 64 Hz. Never wait here: a blocking
-  // readiness loop can stall the 1 kHz IMU estimator for 100 ms and starve
+  // The DPS368 runs in background mode at 32 Hz. Never wait here: a blocking
+  // readiness loop can stall the 500 Hz IMU estimator for 100 ms and starve
   // the core-0 CAN service loop when called from a shared path.
   uint8_t flags = dpsRead8(REG_MEAS_CFG);
   lastStatus = flags;
@@ -24,12 +24,12 @@ bool BARO::update() {
   int32_t candidateRawP = readPressureRaw();
   float candidateTempC = calcTemperatureC(rawT);
   float candidatePressurePa = calcPressurePa(candidateRawP, rawT);
-  float candidateAltitudeCm =
-      pressureToRelAlt_cm(candidatePressurePa, baselinePressure);
+  float candidateAltitudeCm = pressureToRelAlt_cm(
+      candidatePressurePa, baselinePressure, candidateTempC + 273.15f);
 
   // A short/noisy I2C read must not replace the last good sensor value.  The
-  // estimator and logger deliberately use the held value between 64 Hz DPS368
-  // conversions, so a 1 kHz loop never turns normal "not ready yet" status
+  // estimator and logger deliberately use the held value between 32 Hz DPS368
+  // conversions, so a 500 Hz loop never turns normal "not ready yet" status
   // into a missing/zero barometer trace.
   if (!isfinite(candidateTempC) || candidateTempC <= -80.0f ||
       candidateTempC >= 100.0f || !isfinite(candidatePressurePa) ||
@@ -102,26 +102,25 @@ bool BARO::init() {
 
   readCoefficients();
 
-  // 64 Hz, 64x oversampling for both pressure and temperature. This is the
-  // DPS368 reference driver's high-precision continuous setting: it provides
-  // substantially lower pressure noise than 8x while retaining a 15.6 ms
-  // measurement interval suitable for flight estimation. The 64x scale
-  // factor requires the associated result-shift bit.
-  constexpr uint8_t kHighPrecisionCfg = 0x66;
-  constexpr float kHighPrecisionScale = 1040384.0f;
-  dpsWrite(REG_PRS_CFG, kHighPrecisionCfg);
+  // 32 Hz, 8x oversampling for both pressure and temperature.  Precision
+  // code 0x03 means 8x; its DPS368 compensation scale factor is 7,864,320.
+  // The former driver used the single-sample scale factor (524,288) while
+  // enabling result shifts intended only for >8x oversampling.  That made
+  // pressure compensation configuration-dependent and produced a severely
+  // compressed flight-altitude trace.
+  dpsWrite(REG_PRS_CFG, 0x53);
   // The compensation coefficients are valid only for the sensor selected by
   // TMP_COEF_SRCE.  Preserve that read-only source bit instead of assuming
   // every DPS368 board uses the external/MEMS temperature sensor.
   uint8_t tempSource = dpsRead8(REG_COEF_SRCE) & 0x80;
-  dpsWrite(REG_TMP_CFG, tempSource | kHighPrecisionCfg);  // 64 Hz, 64x
-  kP = kHighPrecisionScale;
-  kT = kHighPrecisionScale;
+  dpsWrite(REG_TMP_CFG, tempSource | 0x53);  // 32 Hz, 8x
+  kP = 7864320.0f;
+  kT = 7864320.0f;
 
-  // Result shifts are required above 8x. Explicitly set both so the raw
-  // values agree with the 64x compensation scale factors above.
+  // Result shifts are required only for oversampling above 8x.  Explicitly
+  // clear them so the raw values agree with the 8x scale factors above.
   uint8_t cfg = dpsRead8(REG_CFG_REG);
-  cfg |= (1 << 2) | (1 << 3);
+  cfg &= (uint8_t)~((1 << 2) | (1 << 3));
   dpsWrite(REG_CFG_REG, cfg);
 
   // Read the configuration back.  A failed I2C write must not silently leave
@@ -129,9 +128,8 @@ bool BARO::init() {
   uint8_t appliedPrsCfg = dpsRead8(REG_PRS_CFG);
   uint8_t appliedTmpCfg = dpsRead8(REG_TMP_CFG);
   uint8_t appliedCfg = dpsRead8(REG_CFG_REG);
-  if (appliedPrsCfg != kHighPrecisionCfg ||
-      appliedTmpCfg != (uint8_t)(tempSource | kHighPrecisionCfg) ||
-      (appliedCfg & ((1 << 2) | (1 << 3))) != ((1 << 2) | (1 << 3))) {
+  if (appliedPrsCfg != 0x53 || appliedTmpCfg != (uint8_t)(tempSource | 0x53) ||
+      (appliedCfg & ((1 << 2) | (1 << 3))) != 0) {
     lastError = "DPS368 configuration readback mismatch";
     return false;
   }
@@ -139,35 +137,18 @@ bool BARO::init() {
   // Start background mode
   dpsWrite(REG_MEAS_CFG, 0x07);
 
-  // Average a complete second of pressure conversions for the launch
-  // reference. A single conversion makes every later relative altitude carry
-  // its quantization/noise error as a fixed offset.
-  constexpr uint8_t kBaselineSamples = 64;
-  float pressureSum = 0.0f;
-  for (uint8_t i = 0; i < kBaselineSamples; ++i) {
-    if (!waitForFlags(MEAS_PRS_RDY, 100)) {
-      lastError = "pressure conversion not ready";
-      return false;
-    }
-    rawP = readPressureRaw();
-    if (!waitForFlags(MEAS_TMP_RDY, 100)) {
-      lastError = "temperature conversion not ready";
-      return false;
-    }
-    rawT = readTempRaw();
-    float samplePressure = calcPressurePa(rawP, rawT);
-    if (!isfinite(samplePressure) || samplePressure <= 1000.0f ||
-        samplePressure >= 130000.0f) {
-      lastError = "invalid baseline pressure/calibration";
-      return false;
-    }
-    pressureSum += samplePressure;
-    // MEAS_*_RDY remains asserted between background conversions on this
-    // device. Waiting one ODR period prevents averaging the same register
-    // value 64 times.
-    if (i + 1 < kBaselineSamples) delay(16);
+  // Set baseline
+  if (!waitForFlags(MEAS_PRS_RDY, 100)) {
+    lastError = "pressure conversion not ready";
+    return false;
   }
-  baselinePressure = pressureSum / kBaselineSamples;
+  rawP = readPressureRaw();
+  if (!waitForFlags(MEAS_TMP_RDY, 100)) {
+    lastError = "temperature conversion not ready";
+    return false;
+  }
+  rawT = readTempRaw();
+  baselinePressure = calcPressurePa(rawP, rawT);
   if (!isfinite(baselinePressure) || baselinePressure <= 1000.0f) {
     lastError = "invalid baseline pressure/calibration";
     return false;
@@ -259,14 +240,8 @@ float BARO::calcPressurePa(int32_t rawP, int32_t rawT) {
          Traw * ((float)c01 + Praw * ((float)c11 + Praw * (float)c21));
 }
 
-float BARO::pressureToRelAlt_cm(float P, float P0) {
-  // The DPS368 reports die temperature, not free-stream air temperature.
-  // Feeding it into an isothermal equation creates a thermal altitude drift.
-  // ISA pressure altitude is substantially more stable over this vehicle's
-  // operating range and only requires the pressure ratio.
-  constexpr float kIsaAltitudeM = 44330.0f;
-  constexpr float kIsaExponent = 0.190263f;
-  float h = kIsaAltitudeM * (1.0f - powf(P / P0, kIsaExponent));
+float BARO::pressureToRelAlt_cm(float P, float P0, float T_K) {
+  float h = -(R * T_K / g) * logf(P / P0);
   return h * 100.0f;
 }
 
